@@ -5,6 +5,7 @@
  * このファイルに API キーを持ち込まないこと。
  */
 
+import { track } from "@vercel/analytics";
 import { WordDetail, SavedWord, DictionaryMode, ExtractedCandidate } from "../types";
 import { db, auth } from "../firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
@@ -55,6 +56,19 @@ export function buildCacheKey(word: string, mode: DictionaryMode): string {
 
 export function getCachedWord(word: string, mode: DictionaryMode): WordDetail | null {
   return localCache.get(buildCacheKey(word, mode)) ?? null;
+}
+
+/**
+ * 採算はキャッシュヒット率で決まるので、検索1回ごとにどの層で解決したかを
+ * 記録する。local / firestore はコストゼロ、ai だけが実費（約1.8円）。
+ * 計測基盤が無効でも track は黙って捨てられるだけで、検索には影響しない。
+ */
+function trackLookupSource(source: "local" | "firestore" | "ai", mode: DictionaryMode): void {
+  try {
+    track("lookup", { source, mode: String(mode) });
+  } catch {
+    // 計測の失敗で検索を止めない
+  }
 }
 
 export class ApiError extends Error {
@@ -110,7 +124,10 @@ export async function lookupWord(
   const cacheKey = buildCacheKey(word, mode);
 
   const local = localCache.get(cacheKey);
-  if (local) return local;
+  if (local) {
+    trackLookupSource("local", mode);
+    return local;
+  }
 
   const cacheRef = doc(db, "dictionary_cache", cacheKey);
   try {
@@ -119,12 +136,14 @@ export async function lookupWord(
       const data = snap.data() as WordDetail;
       localCache.set(cacheKey, data);
       saveLocalCache(); // 旧実装はここで保存しておらず、毎回 Firestore を往復していた
+      trackLookupSource("firestore", mode);
       return data;
     }
   } catch (e) {
     console.warn("Dictionary cache read failed, falling back to AI:", e);
   }
 
+  trackLookupSource("ai", mode);
   const result = await streamLookup(word, mode, onPartial);
 
   localCache.set(cacheKey, result);

@@ -22,6 +22,7 @@ import {
 } from "./_lib/gemini.js";
 import { parsePartialJson } from "./_lib/partialJson.js";
 import { checkAndConsumeLookupQuota } from "./_lib/quota.js";
+import { logLookupCost, type UsageLike } from "./_lib/costLog.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -109,6 +110,8 @@ export async function POST(request: Request): Promise<Response> {
         let buffer = "";
         let lastSentAt = 0;
         let lastSentKeys = 0;
+        // 実費の実測用。usageMetadata は最後のチャンクに入る。
+        let usage: UsageLike | undefined;
 
         const send = (payload: unknown) => {
           controller.enqueue(encoder.encode(sseEvent(payload)));
@@ -116,6 +119,7 @@ export async function POST(request: Request): Promise<Response> {
 
         try {
           for await (const chunk of stream) {
+            if (chunk.usageMetadata) usage = chunk.usageMetadata as UsageLike;
             const text = chunk.text;
             if (!text) continue;
             buffer += text;
@@ -137,6 +141,8 @@ export async function POST(request: Request): Promise<Response> {
             // 送信直前に元の綴りへ上書きされてしまう。
             send({ type: "partial", payload: { ...partial, mode: modeLabel(mode) } });
           }
+
+          logLookupCost(word, mode, usage);
 
           let final = JSON.parse(buffer) as Record<string, unknown>;
 
