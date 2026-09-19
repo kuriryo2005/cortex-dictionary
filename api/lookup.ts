@@ -10,7 +10,7 @@
  * data: {"type":"error","message":"..."}
  */
 
-import { withAuth, sseEvent, SSE_HEADERS, errorResponse } from "./_lib/handler.js";
+import { withAuth, sseEvent, SSE_HEADERS, errorResponse, classifyAiError } from "./_lib/handler.js";
 import {
   withKeyFailover,
   MODEL,
@@ -178,12 +178,9 @@ export async function POST(request: Request): Promise<Response> {
           send({ type: "done", payload: { ...final, mode: modeLabel(mode) } });
         } catch (e) {
           console.error("[api:lookup] stream error", e);
-          send({
-            type: "error",
-            message: e instanceof SyntaxError
-              ? "AI の応答を解釈できませんでした。もう一度お試しください。"
-              : "AI の応答に失敗しました。",
-          });
+          // 原因によって利用者が取れる行動が違うので、同じ判定を通す
+          const failure = classifyAiError(e);
+          send({ type: "error", message: failure.message, reason: failure.reason });
         } finally {
           controller.close();
         }
