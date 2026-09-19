@@ -18,14 +18,21 @@
  */
 
 import firebaseConfig from "../../firebase-applet-config.json" with { type: "json" };
+import { PLAN_QUOTA, resolvePlan, type PlanId } from "./plan.js";
 
 const PROJECT_ID = firebaseConfig.projectId;
 const DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents`;
 
-export const LOOKUP_QUOTA = { day: 300, week: 1000, month: 2000 } as const;
+/**
+ * 後方互換の別名。実際の上限はプランごとに `PLAN_QUOTA` で決まる。
+ * （Pro の値と一致させてある）
+ */
+export const LOOKUP_QUOTA = PLAN_QUOTA.pro;
 
-export type QuotaResult = { ok: true } | { ok: false; message: string };
+export type QuotaResult =
+  | { ok: true; plan: PlanId }
+  | { ok: false; plan: PlanId; message: string; upgradable: boolean };
 
 function pad(n: number): string {
   return String(n).padStart(2, "0");
@@ -69,6 +76,8 @@ function fieldNumber(fields: Record<string, any> | undefined, key: string): numb
  * 達していれば ok:false と、どの期間の上限かを伝えるメッセージを返す。
  */
 export async function checkAndConsumeLookupQuota(idToken: string, uid: string): Promise<QuotaResult> {
+  const { plan } = await resolvePlan(idToken, uid);
+  const limit = PLAN_QUOTA[plan];
   const { dayKey, weekKey, monthKey } = currentKeys();
   const docUrl = `${BASE_URL}/usage_counters/${uid}`;
   const authHeader = { Authorization: `Bearer ${idToken}` };
@@ -88,22 +97,36 @@ export async function checkAndConsumeLookupQuota(idToken: string, uid: string): 
     } else if (getRes.status !== 404) {
       // 読み取り自体に失敗した場合は、上限機構の不調でサービスを止めないよう許可する
       console.warn("[quota] usage_counters read failed:", getRes.status);
-      return { ok: true };
+      return { ok: true, plan };
     }
   } catch (e) {
     console.warn("[quota] usage_counters read error:", e);
-    return { ok: true };
+    return { ok: true, plan };
   }
 
-  if (dayCount >= LOOKUP_QUOTA.day) {
-    return { ok: false, message: `本日の検索上限（${LOOKUP_QUOTA.day}語）に達しました。日本時間の日付が変わるとリセットされます。` };
-  }
-  if (weekCount >= LOOKUP_QUOTA.week) {
-    return { ok: false, message: `今週の検索上限（${LOOKUP_QUOTA.week}語）に達しました。来週になるとリセットされます。` };
-  }
-  if (monthCount >= LOOKUP_QUOTA.month) {
-    return { ok: false, message: `今月の検索上限（${LOOKUP_QUOTA.month}語）に達しました。来月になるとリセットされます。` };
-  }
+  const over = (
+    count: number,
+    max: number,
+    period: string,
+    resetNote: string
+  ): QuotaResult | null =>
+    count < max
+      ? null
+      : {
+          ok: false,
+          plan,
+          upgradable: plan === "free",
+          message:
+            plan === "free"
+              ? `無料プランの${period}の検索上限（${max}語）に達しました。${resetNote} Pro にすると1日300語まで検索できます。`
+              : `${period}の検索上限（${max}語）に達しました。${resetNote}`,
+        };
+
+  const exceeded =
+    over(dayCount, limit.day, "本日", "日本時間の日付が変わるとリセットされます。") ??
+    over(weekCount, limit.week, "今週", "来週になるとリセットされます。") ??
+    over(monthCount, limit.month, "今月", "来月になるとリセットされます。");
+  if (exceeded) return exceeded;
 
   try {
     await fetch(docUrl, {
@@ -127,5 +150,5 @@ export async function checkAndConsumeLookupQuota(idToken: string, uid: string): 
     console.warn("[quota] usage_counters write error:", e);
   }
 
-  return { ok: true };
+  return { ok: true, plan };
 }

@@ -166,6 +166,15 @@ service cloud.firestore {
     // built it as `${word}_${mode}` where mode contained Japanese characters
     // (e.g. "turbulence_一般"), so every create was rejected and the cache was
     // never populated. The client now emits `${wordLower}__${gen|aca}`.
+    // ── 課金プラン ───────────────────────────────────────────────
+    // 契約状態は Stripe Webhook（サーバー側のサービスアカウント）だけが
+    // 書き込む。ユーザーは自分の契約を読めるだけで、書き換えは一切できない。
+    // これを緩めると誰でも自分を Pro にできてしまうので絶対に変更しないこと。
+    match /subscriptions/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
     match /dictionary_cache/{cacheKey} {
       // Reading requires authentication. The app is login-only, and leaving this
       // open would give an unauthenticated path to AI-generated content.
