@@ -20,11 +20,14 @@ import {
   ClipboardPaste,
   Home,
   Tag as TagIcon,
+  Sparkles,
   X
 } from "lucide-react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale";
-import { lookupWord, planNextReview, getCachedWord, fetchPhonetic } from "./services/geminiService";
+import { lookupWord, planNextReview, getCachedWord, fetchPhonetic, ApiError } from "./services/geminiService";
+import { usePlan } from "./hooks/usePlan";
+import { UpgradeModal } from "./components/UpgradeModal";
 import {
   TARGET_SCHEMA_VERSION,
   coerceWordDetail,
@@ -190,6 +193,17 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // 課金プラン。取得に失敗しても free として動くので UI は壊れない。
+  const { status: planStatus, isPro, refresh: refreshPlan } = usePlan(user);
+  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
+
+  /** 上限に当たったときなど、理由つきでアップグレード画面を開く。 */
+  const openUpgrade = (reason?: string) => {
+    setUpgradeReason(reason);
+    setIsUpgradeOpen(true);
+  };
 
   /**
    * 単語一覧の購読（実装仕様書 F2-b）。
@@ -383,7 +397,12 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : "単語の検索に失敗しました。";
-      toast.error(message);
+      // 無料プランの上限に当たった場合は、トーストで流さずアップグレード画面を出す
+      if (error instanceof ApiError && error.status === 429 && !isPro) {
+        openUpgrade(message);
+      } else {
+        toast.error(message);
+      }
       setResult(null);
     } finally {
       setLoading(false);
@@ -956,6 +975,16 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             )}
             <button
               type="button"
+              onClick={() => openUpgrade()}
+              className={`flex items-center gap-2.5 text-xs font-bold transition-colors ${
+                isPro ? "text-[#656E77] hover:text-[#1A1C1E]" : "text-[#2A5CFF] hover:text-[#1A3FCC]"
+              }`}
+            >
+              <Sparkles className="w-4 h-4" />
+              {isPro ? "Pro プラン（契約中）" : "Pro にアップグレード"}
+            </button>
+            <button
+              type="button"
               onClick={() => setIsDataModalOpen(true)}
               className="flex items-center gap-2.5 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
             >
@@ -1318,6 +1347,16 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             onClose={() => setIsDeckManagerOpen(false)}
             api={decks}
             words={savedWords}
+          />
+          <UpgradeModal
+            open={isUpgradeOpen}
+            onClose={() => {
+              setIsUpgradeOpen(false);
+              setUpgradeReason(undefined);
+              void refreshPlan();
+            }}
+            status={planStatus}
+            reason={upgradeReason}
           />
           <BulkExtractModal
             open={isExtractOpen}
