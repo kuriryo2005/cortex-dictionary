@@ -59,6 +59,7 @@ import { Wordbook } from "./components/Wordbook";
 import { DataTransferModal } from "./components/DataTransferModal";
 import { ReviewMode } from "./components/ReviewMode";
 import { Dashboard } from "./components/Dashboard";
+import { FirstRun } from "./components/FirstRun";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
 import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
@@ -1115,7 +1116,18 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
       {/* Main Content */}
       <main className="flex-1 h-full overflow-y-auto bg-white p-6 md:p-10 lg:p-16 print:h-auto print:overflow-visible print:p-0">
         <AnimatePresence mode="wait">
-          {activeTab === "home" ? (
+          {activeTab === "home" && savedWords.length === 0 ? (
+            // 保存が1語も無い人にはダッシュボードではなく最初の一歩を出す。
+            // 空の数値を並べても何をすればいいか伝わらない。
+            <motion.div key="firstrun" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <FirstRun
+                onPick={(word) => {
+                  setSearchQuery(word);
+                  void handleSearch(undefined, word);
+                }}
+              />
+            </motion.div>
+          ) : activeTab === "home" ? (
             <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <Dashboard
                 words={filteredWords}
