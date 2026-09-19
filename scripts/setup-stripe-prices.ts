@@ -20,6 +20,8 @@ if (!KEY) {
 }
 
 const PRODUCT_NAME = "Cortex Dictionary Pro";
+const PRODUCT_DESCRIPTION =
+  "収録済みの単語は引き放題。AIが新しく解説を作る単語が1日100語まで。保存無制限・ナレッジマップ全開放・英文から一括抽出・発音・統計・Ankiエクスポート。";
 const MONTHLY_JPY = 600;
 const YEARLY_JPY = 4800;
 
@@ -47,10 +49,12 @@ let product = products.find((p) => p.name === PRODUCT_NAME);
 
 if (product) {
   console.log(`既存の商品を使います: ${product.id}`);
+  // 説明は Checkout 画面に出るので、文言を変えたら反映し直す
+  await stripe<Product>("POST", `/products/${product.id}`, { description: PRODUCT_DESCRIPTION });
 } else {
   product = await stripe<Product>("POST", "/products", {
     name: PRODUCT_NAME,
-    description: "検索1日100語・保存無制限・ナレッジマップ全開放・一括抽出・発音・統計・Ankiエクスポート",
+    description: PRODUCT_DESCRIPTION,
   });
   console.log(`商品を作成しました: ${product.id}`);
 }
