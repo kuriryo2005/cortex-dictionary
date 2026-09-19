@@ -22,12 +22,14 @@ import {
   Home,
   Tag as TagIcon,
   Sparkles,
+  HelpCircle,
   X
 } from "lucide-react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale";
 import { lookupWord, planNextReview, getCachedWord, fetchPhonetic, ApiError } from "./services/geminiService";
 import { usePlan } from "./hooks/usePlan";
+import { useUsage } from "./hooks/useUsage";
 import { UpgradeModal } from "./components/UpgradeModal";
 import { LandingPage } from "./components/LandingPage";
 import {
@@ -59,6 +61,7 @@ import { ReviewMode } from "./components/ReviewMode";
 import { Dashboard } from "./components/Dashboard";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
+import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
 import { Skeleton } from "./components/ui/skeleton";
@@ -166,6 +169,8 @@ export default function App() {
   const [tagDraft, setTagDraft] = useState("");
   /** 絞り込みを開いているか。既定は畳む（単語一覧の高さを優先する） */
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  /** 初回のスタートアップガイド。スキップ・完了のどちらでも二度と自動では出さない */
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   const decks = useDecks(user?.uid ?? null);
 
@@ -202,8 +207,22 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  /**
+   * 初回ログイン時に一度だけガイドを出す。
+   *
+   * ランディングページの裏で開いてしまわないよう、user が入ってから判定する。
+   * 既読の判定は localStorage なので、消せばまた出る（出し直したい人向け）。
+   */
+  useEffect(() => {
+    if (!user) return;
+    if (hasSeenGuide()) return;
+    setIsGuideOpen(true);
+  }, [user]);
+
   // 課金プラン。取得に失敗しても free として動くので UI は壊れない。
   const { status: planStatus, isPro, refresh: refreshPlan } = usePlan(user);
+  // 無料プランの「今日あと何語」。上限に対する納得感と Pro 検討のきっかけになる。
+  const { usage, refresh: refreshUsage } = useUsage(user, planStatus);
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
 
@@ -446,6 +465,8 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     } finally {
       setLoading(false);
       setIsStreaming(false);
+      // 上限カウンタはサーバーが進めるので、検索後に読み直す
+      void refreshUsage();
     }
   };
   // Debounced search suggestions
@@ -1030,12 +1051,31 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             <button
               type="button"
               onClick={() => openUpgrade()}
-              className={`flex items-center gap-2.5 text-xs font-bold transition-colors ${
+              className={`flex items-start gap-2.5 text-left text-xs font-bold transition-colors ${
                 isPro ? "text-[#656E77] hover:text-[#1A1C1E]" : "text-[#2A5CFF] hover:text-[#1A3FCC]"
               }`}
             >
-              <Sparkles className="w-4 h-4" />
-              {isPro ? "Pro プラン（契約中）" : "Pro にアップグレード"}
+              <Sparkles className="w-4 h-4 shrink-0 mt-px" />
+              {isPro ? (
+                <span>Pro プラン（契約中）</span>
+              ) : (
+                <span>
+                  Pro にアップグレード
+                  <span
+                    className={`block font-normal mt-0.5 ${
+                      usage.remaining === 0
+                        ? "text-red-500"
+                        : usage.remaining <= 3
+                          ? "text-[#EA580C]"
+                          : "text-[#8A9199]"
+                    }`}
+                  >
+                    {usage.remaining === 0
+                      ? "今日の新出単語はあと0語"
+                      : `今日の新出単語はあと ${usage.remaining} 語`}
+                  </span>
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -1044,6 +1084,15 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             >
               <Download className="w-4 h-4" />
               データの書き出し / 復元
+            </button>
+            {/* ガイドはスキップできる代わりに、いつでもここから開き直せる */}
+            <button
+              type="button"
+              onClick={() => setIsGuideOpen(true)}
+              className="flex items-center gap-2.5 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
+            >
+              <HelpCircle className="w-4 h-4" />
+              使い方
             </button>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -1426,6 +1475,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             status={planStatus}
             reason={upgradeReason}
           />
+          <StartupGuide open={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
           <BulkExtractModal
             open={isExtractOpen}
             onClose={() => setIsExtractOpen(false)}

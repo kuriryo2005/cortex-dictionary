@@ -44,9 +44,15 @@ const FEATURES: { title: string; body: string }[] = [
   },
 ];
 
-const FREE_POINTS = ["検索 1日10語", "保存 200語まで", "フラッシュカード復習", "データの書き出し"];
+const FREE_POINTS = [
+  "既に辞書にある単語は引き放題",
+  "新しくAIが解説を作る単語は1日10語",
+  "保存 200語まで",
+  "フラッシュカード復習",
+  "データの書き出し",
+];
 const PRO_POINTS = [
-  "検索 1日100語（月1,500語）",
+  "新出単語 1日100語（月1,500語）",
   "保存 無制限",
   "語彙ナレッジマップ 全開放",
   "英文から未知語を一括抽出",
@@ -58,7 +64,7 @@ const PRO_POINTS = [
 const FAQ: { q: string; a: string }[] = [
   {
     q: "無料でどこまで使えますか？",
-    a: "1日10語の検索と200語の保存まで無料で使えます。クレジットカードの登録は不要です。",
+    a: "既に辞書に入っている単語は無料プランでも引き放題です。まだ誰も調べていない単語をAIが新しく解説するときだけ1日10語までという上限があります。保存は200語まで。クレジットカードの登録は不要です。",
   },
   {
     q: "既存の単語帳から移行できますか？",
@@ -102,7 +108,7 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
           </p>
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <LoginButton />
-            <span className="text-xs text-[#8A9199]">クレジットカード不要 / 1日10語まで無料</span>
+            <span className="text-xs text-[#8A9199]">クレジットカード不要 / 収録済みの単語は引き放題</span>
           </div>
         </motion.header>
 
