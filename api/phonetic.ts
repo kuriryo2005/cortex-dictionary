@@ -57,5 +57,5 @@ export async function POST(request: Request): Promise<Response> {
     if (!phonetic) return errorResponse(502, "発音記号を取得できませんでした。");
 
     return jsonResponse({ phonetic });
-  });
+  }, "review");
 }

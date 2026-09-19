@@ -9,6 +9,7 @@ export async function POST(request: Request): Promise<Response> {
     const state = await resolvePlan(idToken, user.uid);
     return jsonResponse({
       ...state,
+      // バケット別の上限をそのまま渡す（クライアントは lookup を主に使う）
       quota: PLAN_QUOTA[state.plan],
       wordLimit: PLAN_WORD_LIMIT[state.plan],
       billingEnabled: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_MONTHLY),

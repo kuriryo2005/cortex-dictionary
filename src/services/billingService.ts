@@ -9,11 +9,19 @@ import { auth } from "../firebase";
 
 export type PlanId = "free" | "pro";
 
+/** サーバーの api/_lib/plan.ts の QuotaBucket と対応させる。 */
+export type QuotaBucket = "lookup" | "extract" | "story" | "review";
+export interface QuotaLimit {
+  day: number;
+  week: number;
+  month: number;
+}
+
 export interface PlanStatus {
   plan: PlanId;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd?: boolean;
-  quota: { day: number; week: number; month: number };
+  quota: Record<QuotaBucket, QuotaLimit>;
   wordLimit: number | null;
   /** サーバーに Stripe の設定が入っているか。false なら課金導線を出さない。 */
   billingEnabled: boolean;
@@ -22,7 +30,12 @@ export interface PlanStatus {
 /** 契約状態が取れないときに使う既定値（常に厳しい側＝free に倒す）。 */
 export const FREE_STATUS: PlanStatus = {
   plan: "free",
-  quota: { day: 10, week: 40, month: 100 },
+  quota: {
+    lookup: { day: 10, week: 40, month: 100 },
+    extract: { day: 0, week: 0, month: 0 },
+    story: { day: 3, week: 10, month: 20 },
+    review: { day: 20, week: 80, month: 300 },
+  },
   wordLimit: 200,
   billingEnabled: false,
 };

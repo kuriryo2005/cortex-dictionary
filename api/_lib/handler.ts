@@ -7,6 +7,8 @@
 
 import { AuthError, requireUser, type AuthedUser } from "./auth.js";
 import { consume, RateLimitError, type RateLimitName } from "./ratelimit.js";
+import { checkAndConsumeQuota } from "./quota.js";
+import type { QuotaBucket } from "./plan.js";
 
 export const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 
@@ -22,13 +24,20 @@ export function errorResponse(status: number, message: string, extra: Record<str
 }
 
 /**
- * POST + 認証 + レート制限をまとめて処理する。
+ * POST + 認証 + レート制限 + プラン別の利用上限をまとめて処理する。
  * 認証に通ればハンドラを呼び、失敗すれば適切なステータスを返す。
+ *
+ * `quotaBucket` を渡すと、Gemini の実費に対するプラン別の日/週/月の上限を
+ * 消費する（api/_lib/quota.ts）。実費の出ないエンドポイントでは省略する。
+ * レート制限（インメモリ・1時間単位）は乱打を防ぐためのもので、
+ * サーバーレスではインスタンスごとにリセットされるため上限の役には立たない。
+ * 課金に関わる歯止めは必ず quotaBucket 側で行うこと。
  */
 export async function withAuth(
   request: Request,
   limit: RateLimitName,
-  handler: (user: AuthedUser, body: Record<string, unknown>) => Promise<Response>
+  handler: (user: AuthedUser, body: Record<string, unknown>) => Promise<Response>,
+  quotaBucket?: QuotaBucket
 ): Promise<Response> {
   if (request.method !== "POST") {
     return errorResponse(405, "POST を使ってください。");
@@ -51,6 +60,15 @@ export async function withAuth(
       });
     }
     throw e;
+  }
+
+  if (quotaBucket) {
+    const idToken = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const quota = await checkAndConsumeQuota(idToken, user.uid, quotaBucket);
+    if (quota.ok === false) {
+      // upgradable のときクライアントはアップグレード導線を出す
+      return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });
+    }
   }
 
   let body: Record<string, unknown>;

@@ -19,25 +19,52 @@ const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/dat
 export type PlanId = "free" | "pro";
 
 /**
- * プランごとの検索上限（日/週/月）。
+ * 実費が発生する AI 呼び出しの種類。エンドポイントごとにカウンタを分ける。
+ * - `lookup`  … 単語検索（/api/lookup）
+ * - `extract` … 英文からの一括抽出（/api/extract）。最大8,000字を処理するので最も高い
+ * - `story`   … 語源ストーリー（/api/story, /api/expand-root）
+ * - `review`  … 復習コメントと発音記号の補完（/api/review-analysis, /api/phonetic）。軽い
+ */
+export type QuotaBucket = "lookup" | "extract" | "story" | "review";
+
+export interface QuotaLimit {
+  day: number;
+  week: number;
+  month: number;
+}
+
+/**
+ * プラン × 種類ごとの上限。
  *
  * 上限は「気分」ではなく原価から逆算している。gemini-3.8-flash は
  * 出力 $3.75/1M トークン（2026年末までの導入価格。2027/01 から $7.50）で、
  * 1回の検索は thinking を含め出力 3,000 トークン前後に達する。つまり
  * **キャッシュに当たらなかった検索1回あたり約1.8円**かかる。
  *
- * 当初は Pro を日300語にしていたが、それだと月9,000語 ≒ 原価16,000円で、
+ * 当初は Pro の検索を日300語にしていたが、それだと月9,000語 ≒ 原価16,000円で、
  * 月額600円では桁違いの赤字になる。dictionary_cache は全ユーザー共有なので
  * 実際には多くがキャッシュヒットするが、それに賭けた上限設定は危険。
  *
- * そこで Pro は日100語・月1,500語に抑えた（学習者としては十分に多い）。
- * 月1,500語が全てキャッシュミスでも原価は約2,700円…にはならず、頻出語は
- * 事前学習済みのため実効ヒット率8割を見込むと約540円。ここを実測で
- * 詰めるまでは、この保守的な上限を動かさないこと。
+ * そこで Pro の検索は日100語・月1,500語に抑えた（学習者としては十分に多い）。
+ * 実効ヒット率8割を見込むと原価は月540円程度に収まる。ここを実測で詰めるまでは
+ * この保守的な上限を動かさないこと（実測は api/_lib/costLog.ts のログから）。
+ *
+ * extract は LP と課金画面で Pro 限定と謳っている機能なので、free は 0 にして
+ * サーバー側で確実に止める。
  */
-export const PLAN_QUOTA: Record<PlanId, { day: number; week: number; month: number }> = {
-  free: { day: 10, week: 40, month: 100 },
-  pro: { day: 100, week: 400, month: 1500 },
+export const PLAN_QUOTA: Record<PlanId, Record<QuotaBucket, QuotaLimit>> = {
+  free: {
+    lookup: { day: 10, week: 40, month: 100 },
+    extract: { day: 0, week: 0, month: 0 },
+    story: { day: 3, week: 10, month: 20 },
+    review: { day: 20, week: 80, month: 300 },
+  },
+  pro: {
+    lookup: { day: 100, week: 400, month: 1500 },
+    extract: { day: 10, week: 40, month: 100 },
+    story: { day: 20, week: 80, month: 300 },
+    review: { day: 100, week: 400, month: 1500 },
+  },
 };
 
 /** プランごとの保存語数の上限。null は無制限。 */

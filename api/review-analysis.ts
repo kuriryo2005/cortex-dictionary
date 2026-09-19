@@ -1,8 +1,11 @@
 /**
- * POST /api/review-analysis — 復習間隔と苦手分析の生成（実装仕様書 F1）。
+ * POST /api/review-analysis — 苦手分析の生成（実装仕様書 F1）。
  *
- * NOTE: 復習間隔を毎回 LLM に決めさせる設計自体は Phase 3 で FSRS の
- * ローカル計算に置き換える予定。ここでは既存の挙動をそのままサーバーへ移す。
+ * NOTE: 復習間隔の決定はこのエンドポイントから外れた。いまは
+ * src/lib/srs.ts がローカルで決める（同期・無課金・決定的）。
+ * クライアントがここを呼ぶのは「何度やっても抜けない語」（AGAIN 6 回以上）に
+ * 限られ、使うのは aiAnalysis だけ。nextReviewAt は後方互換のために
+ * 返し続けているが、呼び出し側は読んでいない。
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
@@ -80,5 +83,5 @@ Return JSON with:
       nextReviewAt,
       aiAnalysis: typeof parsed.aiAnalysis === "string" ? parsed.aiAnalysis : "",
     });
-  });
+  }, "review");
 }

@@ -25,5 +25,5 @@ export async function POST(request: Request): Promise<Response> {
     });
 
     return jsonResponse({ story: response.text || "語源のストーリーは現在準備中です。" });
-  });
+  }, "story");
 }

@@ -106,5 +106,5 @@ export async function POST(request: Request): Promise<Response> {
       .slice(0, MAX_CANDIDATES);
 
     return jsonResponse({ candidates });
-  });
+  }, "extract");
 }

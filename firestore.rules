@@ -149,15 +149,18 @@ service cloud.firestore {
                       (incoming().lastStudiedOn is string && incoming().lastStudiedOn.size() <= 10));
     }
 
-    // 検索のフェアユース上限カウンタ（日/週/月）。api/_lib/quota.ts が
-    // 本人の ID トークンで読み書きする。他人のドキュメントは触れない。
+    // AI 呼び出しの利用上限カウンタ（日/週/月 × 種類別）。
+    //
+    // 以前は本人の ID トークンで書かせていたが、それでは上限機構として
+    // 成立していなかった。ユーザーが自分のカウンタを 0 に戻せば何度でも
+    // AI を呼べてしまい、実費が青天井になる。書き込みはサーバーの
+    // サービスアカウント（api/_lib/quota.ts）だけが行う。
+    // ここを緩めると課金の前提が崩れるので絶対に変更しないこと。
+    //
+    // 読み取りは本人にだけ許可する（残り回数の表示に使えるようにするため）。
     match /usage_counters/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
-      allow write: if isSignedIn() && request.auth.uid == uid &&
-                     incoming().userId == uid &&
-                     incoming().dayKey is string && incoming().dayCount is number &&
-                     incoming().weekKey is string && incoming().weekCount is number &&
-                     incoming().monthKey is string && incoming().monthCount is number;
+      allow write: if false;
     }
 
     // ── 課金プラン ───────────────────────────────────────────────

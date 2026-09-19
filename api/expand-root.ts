@@ -42,5 +42,5 @@ Return a JSON array of objects with fields: word, meaning (in Japanese), and roo
 
     const parsed = JSON.parse(text);
     return jsonResponse({ words: Array.isArray(parsed) ? parsed.slice(0, 5) : [] });
-  });
+  }, "story");
 }
