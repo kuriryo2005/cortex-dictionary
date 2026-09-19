@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "verify": "tsx scripts/verify-phase0.ts && tsx scripts/verify-phase2-3.ts && tsx scripts/verify-wordbook.ts"
+    "verify": "tsx scripts/verify-phase0.ts && tsx scripts/verify-phase2-3.ts && tsx scripts/verify-wordbook.ts && tsx scripts/verify-srs.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
