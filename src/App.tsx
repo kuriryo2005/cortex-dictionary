@@ -28,6 +28,7 @@ import { ja } from "date-fns/locale";
 import { lookupWord, planNextReview, getCachedWord, fetchPhonetic, ApiError } from "./services/geminiService";
 import { usePlan } from "./hooks/usePlan";
 import { UpgradeModal } from "./components/UpgradeModal";
+import { LandingPage } from "./components/LandingPage";
 import {
   TARGET_SCHEMA_VERSION,
   coerceWordDetail,
@@ -593,32 +594,13 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
 
   // 未ログインではアプリ本体を描画しない。
   // 検索は AI 生成を伴うため、認証なしに叩ける経路を残さない（実装仕様書 F1）。
+  // 代わりに、何ができるアプリなのかを伝えるランディングページを出す。
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white p-6">
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-sm"
-        >
-          <h1 className="text-3xl font-black tracking-tight text-[#1A1C1E] mb-3">
-            Cortex Dictionary
-          </h1>
-          <p className="text-sm text-[#656E77] leading-relaxed mb-10">
-            英単語の意味、語源、例文を調べて保存し、間隔を空けて復習するための辞書です。
-          </p>
-
-          <button type="button" onClick={handleLogin} className="btn-primary w-full">
-            <LogIn className="w-4 h-4" />
-            Google でログイン
-          </button>
-
-          <p className="text-[11px] text-[#8A9199] mt-8 leading-relaxed">
-            保存した単語はアカウントごとに管理され、他のユーザーからは見えません。
-          </p>
-        </motion.div>
+      <>
+        <LandingPage onLogin={handleLogin} />
         <Toaster position="bottom-right" richColors />
-      </div>
+      </>
     );
   }
 
