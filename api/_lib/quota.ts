@@ -2,8 +2,9 @@
  * 単語検索のフェアユース上限（日/週/月）。
  *
  * 1検索ごとに Gemini 側へ実費が発生するため、無制限プランでも上限を設けて
- * 一部のヘビーユーザーだけで採算が崩れるのを防ぐ（1日300語・週1000語・
- * 月2000語）。カウンタは Firestore の usage_counters/{uid} に置く。
+ * 一部のヘビーユーザーだけで採算が崩れるのを防ぐ（プラン別の具体値と
+ * その根拠は api/_lib/plan.ts の PLAN_QUOTA を参照）。カウンタは
+ * Firestore の usage_counters/{uid} に置く。
  *
  * サーバーは firebase-admin を持たない（秘密情報を GEMINI_API_KEY 1本に
  * 抑える設計。api/_lib/auth.ts 参照）。代わりに、リクエストで既に検証済みの
