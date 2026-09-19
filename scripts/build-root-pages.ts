@@ -59,6 +59,8 @@ interface CachedWord {
   word: string;
   meaning: string;
   etymology: string;
+  /** 語源ノードの root / relation を連結したもの。語源の裏付けの2つ目の手がかり。 */
+  nodeText: string;
 }
 
 /** Firestore REST の値表現からプレーンな JS 値に戻す。 */
@@ -96,7 +98,13 @@ async function fetchAllCached(token: string): Promise<CachedWord[]> {
       const meaning = fromValue(f.meaning);
       if (!word || !meaning) continue;
 
-      words.push({ word, meaning, etymology: fromValue(f.etymology) ?? "" });
+      const nodes = (fromValue(f.etymologyNodes) ?? []) as { root?: string; relation?: string }[];
+      const nodeText = nodes
+        .map((n) => `${n?.root ?? ""} ${n?.relation ?? ""}`)
+        .join(" ")
+        .toLowerCase();
+
+      words.push({ word, meaning, etymology: fromValue(f.etymology) ?? "", nodeText });
     }
     pageToken = data.nextPageToken;
   } while (pageToken);
@@ -201,9 +209,14 @@ console.log(`dictionary_cache: ${cached.length} 語`);
 function belongsTo(word: CachedWord, entry: (typeof ROOTS)[number]): boolean {
   const w = word.word.toLowerCase();
   if (!entry.forms.some((f) => w.includes(f))) return false;
-  const ety = word.etymology.toLowerCase();
-  if (!ety) return false;
-  return entry.sources.some((src) => ety.includes(src.toLowerCase()));
+
+  // 語源の裏付けは2箇所から探す。説明文（etymology）に原形が書かれていることも
+  // あれば、語源ノード（etymologyNodes の root / relation）側にだけ出ることもある。
+  // どちらか一方にでも原形が現れれば採用する。両方に無い語は、綴りが似ている
+  // だけの別語源かもしれないので採らない。
+  const evidence = `${word.etymology} ${word.nodeText}`.toLowerCase();
+  if (!evidence.trim()) return false;
+  return entry.sources.some((src) => evidence.includes(src.toLowerCase()));
 }
 
 // キャッシュは一般モードと学術モードで別ドキュメントなので、同じ語が2件ある。
