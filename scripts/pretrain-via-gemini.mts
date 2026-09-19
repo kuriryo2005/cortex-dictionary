@@ -13,12 +13,13 @@
  * 使い方: npx tsx scripts/pretrain-via-gemini.mts
  */
 import dotenv from "dotenv";
+import type { ThinkingConfig } from "@google/genai";
 dotenv.config({ path: ".env.local" });
 
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
-  getClient,
+  withKeyFailover,
   WORD_SCHEMA,
   buildLookupPrompt,
   modeLabel,
@@ -33,8 +34,15 @@ import {
  * 2026-09: 本番検索を gemini-3.8-flash に統一したのに合わせ、事前キャッシュも
  * 同モデルに切り替え（生成内容が本番と完全に一致するようにする）。
  */
-const PRETRAIN_MODEL = "gemini-3.8-flash";
-const PRETRAIN_THINKING = { thinkingLevel: "LOW" };
+/**
+ * 事前学習で使うモデル。既定は本番と同じ gemini-3.8-flash だが、
+ * 大量に流すときは --model=gemini-2.5-flash のほうが安く、無料枠の
+ * 上限にも当たりにくい。内容の作りは同じスキーマ・同じプロンプトなので
+ * 中身の形は変わらない。
+ */
+const PRETRAIN_MODEL = arg("model", "gemini-3.8-flash");
+// SDK の型は ThinkingLevel の列挙を要求するが、API には文字列で通る。
+const PRETRAIN_THINKING = { thinkingLevel: "LOW" } as unknown as ThinkingConfig;
 
 const PROJECT = "gen-lang-client-0163841095";
 const DB = "ai-studio-f55ff9db-e50f-4a01-bdbe-7636a1265750";
@@ -124,8 +132,10 @@ async function processTask(task: Task): Promise<"success" | "skip" | "fail"> {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const ai = getClient();
-      const res = await ai.models.generateContent({
+      // withKeyFailover は死んだキーを隔離し、混雑（503）だけ待って再試行する。
+      // 以前は getClient() を直接呼んでいたため、クレジットの切れたキーが
+      // ローテーションに残り続け、2,058語中2,023語が失敗した。
+      const res = await withKeyFailover((ai) => ai.models.generateContent({
         model: PRETRAIN_MODEL,
         contents: buildLookupPrompt(word, mode),
         config: {
@@ -133,7 +143,7 @@ async function processTask(task: Task): Promise<"success" | "skip" | "fail"> {
           responseSchema: WORD_SCHEMA,
           thinkingConfig: PRETRAIN_THINKING,
         },
-      });
+      }));
       const text = res.text;
       if (!text) throw new Error("empty response");
       const entry = JSON.parse(text) as Record<string, unknown>;
