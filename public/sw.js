@@ -60,16 +60,26 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 画面遷移はネットワーク優先。落ちていたらキャッシュした「/」を出す
+  // 画面遷移はネットワーク優先。落ちていたらキャッシュしたその画面を出し、
+  // 無ければアプリ本体（"/"）にフォールバックする。
+  //
+  // 以前は遷移先の応答をすべて "/" に上書きしていた。規約ページや語源ページを
+  // 開くとアプリ本体のキャッシュがそれに置き換わり、オフライン時に関係のない
+  // ページが出てしまっていた。保存先は遷移先の URL ごとに分ける。
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(SHELL).then((c) => c.put("/", copy));
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(SHELL).then((c) => c.put(request, copy));
+          }
           return res;
         })
-        .catch(() => caches.match("/").then((hit) => hit ?? Response.error()))
+        .catch(async () => {
+          const cache = await caches.open(SHELL);
+          return (await cache.match(request)) ?? (await cache.match("/")) ?? Response.error();
+        })
     );
   }
 });

@@ -21,7 +21,22 @@ export interface SubscriptionRecord {
   cancelAtPeriodEnd: boolean;
 }
 
+/**
+ * Firebase の uid として妥当な形か。
+ *
+ * uid は Stripe の metadata 由来で、そのまま Firestore REST のドキュメント
+ * パスに入る。現状その metadata を設定できるのは自サーバーだけだが、書き込みは
+ * サービスアカウント権限なので、万一おかしな値が入ったときに別のコレクションを
+ * 書き換えられる形にはしておかない。
+ */
+function isValidUid(uid: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(uid);
+}
+
 export async function writeSubscription(uid: string, rec: SubscriptionRecord): Promise<void> {
+  if (!isValidUid(uid)) {
+    throw new Error(`uid の形式が不正です: ${JSON.stringify(uid).slice(0, 64)}`);
+  }
   const token = await getServiceAccessToken();
   const fields = {
     userId: { stringValue: uid },
