@@ -21,6 +21,8 @@ export const RATE_LIMITS = {
   extract: { windowMs: 60 * 60 * 1000, max: 10 },
   // 既存単語の発音記号の遅延補完（F4）。1単語1回きりの軽い呼び出しなので緩め。
   phonetic: { windowMs: 60 * 60 * 1000, max: 300 },
+  // 課金導線（Checkout / Portal / 契約状態の取得）。連打されても困るので控えめ。
+  billing: { windowMs: 60 * 60 * 1000, max: 60 },
 } satisfies Record<string, RateLimitRule>;
 
 export type RateLimitName = keyof typeof RATE_LIMITS;

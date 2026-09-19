@@ -5,29 +5,60 @@
  * このファイルはブラウザに配信されないため、キーがクライアントへ漏れない。
  */
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 
 /**
  * 使用モデル。
  *
- * 旧: gemini-3-flash-preview
+ * 旧: gemini-3-flash-preview（プレビュー版）
  * 実測で最初のトークンまで 15〜20 秒かかり、合計 17〜23 秒。thinkingLevel を
  * MINIMAL にしてもスキーマを小さくしても改善しなかった（scripts/bench-latency.ts）。
- * gemini-2.5-flash は同じ内容を TTFT 1.0 秒 / 合計 4.2 秒で返すため、こちらを使う。
+ * gemini-2.5-flash は同じ内容を TTFT 1.0 秒 / 合計 4.2 秒で返すため、しばらくこちらを使っていた。
+ *
+ * 2026-09: gemini-3.8-flash（正式版、プレビューではない）を試験導入。品質を見て
+ * 2.5-flash に戻すか判断する。thinkingBudget は Gemini 3 系では非推奨のため
+ * thinkingLevel に切り替えている（下記 FAST_THINKING 参照。MINIMAL は 3.8-flash
+ * では無効なので使えず、最速設定は LOW）。
  */
-export const MODEL = "gemini-2.5-flash";
+export const MODEL = "gemini-3.8-flash";
 
-let client: GoogleGenAI | null = null;
+/**
+ * 複数の Gemini API キーをラウンドロビンで使い分ける。
+ *
+ * 無料枠は1プロジェクト（1キー）あたりのレート制限なので、検索が集中すると
+ * 429 で失敗することがある。GEMINI_API_KEY に加えて GEMINI_API_KEY_2,
+ * GEMINI_API_KEY_3, ... を環境変数に足すと、リクエストのたびに順番に
+ * キーを切り替えて負荷を分散する（1キーだけの場合は従来どおり単一キーで動く）。
+ */
+let clients: GoogleGenAI[] | null = null;
+let roundRobinIndex = 0;
 
-export function getClient(): GoogleGenAI {
-  if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY が設定されていません（サーバー環境変数）。");
-    }
-    client = new GoogleGenAI({ apiKey });
+function loadClients(): GoogleGenAI[] {
+  if (clients) return clients;
+
+  const keys: string[] = [];
+  const primary = process.env.GEMINI_API_KEY;
+  if (primary) keys.push(primary);
+  for (let i = 2; ; i++) {
+    const extra = process.env[`GEMINI_API_KEY_${i}`];
+    if (!extra) break;
+    keys.push(extra);
   }
-  return client;
+
+  if (keys.length === 0) {
+    throw new Error("GEMINI_API_KEY が設定されていません（サーバー環境変数）。");
+  }
+
+  clients = keys.map((apiKey) => new GoogleGenAI({ apiKey }));
+  return clients;
+}
+
+/** 呼び出すたびにラウンドロビンで次のキーのクライアントを返す。 */
+export function getClient(): GoogleGenAI {
+  const pool = loadClients();
+  const c = pool[roundRobinIndex % pool.length];
+  roundRobinIndex = (roundRobinIndex + 1) % pool.length;
+  return c;
 }
 
 export type ModeSlug = "gen" | "aca";
@@ -144,18 +175,34 @@ export const WORD_SCHEMA = {
   ],
 } as const;
 
-export function buildLookupPrompt(word: string, mode: ModeSlug): string {
+export function buildLookupPrompt(
+  word: string,
+  mode: ModeSlug,
+  options: { forceExactSpelling?: boolean } = {}
+): string {
   const context = mode === "gen" ? "general everyday usage" : "academic and research contexts";
+
+  const correctionRule = options.forceExactSpelling
+    ? `Treat "${word}" as already correctly spelled. Do NOT change, "correct", or
+substitute a different word for it under any circumstances, even if a longer or
+more advanced word seems related or comes to mind. The "word" field in your
+response must be exactly "${word}" (only case may be normalized).`
+    : `"${word}" is very likely already a correct, valid English word — assume that
+first. Only silently correct it if it is CLEARLY unusable as-is: a keyboard-adjacent
+typo (e.g. "recieve" -> "receive", "beleive" -> "believe", "runing" -> "run") or an
+inflected form you should lemmatize. A correction must stay close to the original
+letters — never replace the input with an unrelated or much longer word just
+because it seems more "advanced" or common in your training data. If "${word}" is
+short (2-5 letters) and forms a real English word as typed (e.g. "map", "run",
+"set", "bat"), you MUST look it up exactly as given and must NOT substitute any
+other word. When genuinely uncertain whether a correction is warranted, do NOT
+correct — look up the input exactly as typed. If you do correct it, the "word"
+field in your response must contain the corrected spelling, not the original input.`;
 
   return `Look up the English word "${word}" specifically for ${context}.
 Prioritize meanings in ${context}.
 
-If "${word}" is misspelled, not a real English word, or an unusual inflected form,
-silently correct it to the most likely intended English word (dictionary/lemma form,
-e.g. "recieve" -> "receive", "beleive" -> "believe", "runing" -> "run") and look up
-THAT word instead. The "word" field in your response must contain this corrected
-spelling, not the original input. Only do this for genuine typos — do not "correct"
-a word that is already a valid, differently-spelled English word.
+${correctionRule}
 
 Write the Japanese exactly in the style of a Japanese university-entrance vocabulary
 book (旺文社「英単語ターゲット」). This style is strict — follow it precisely:
@@ -202,5 +249,8 @@ Provide:
 - importanceScore: 0.0 to 1.0 overall importance for English/IELTS/Engineering learners.`;
 }
 
-/** gemini-2.5-flash では thinkingBudget:0 で思考をスキップする。 */
-export const FAST_THINKING = { thinkingBudget: 0 };
+/**
+ * gemini-3.8-flash では thinkingBudget が非推奨のため thinkingLevel を使う。
+ * MINIMAL は 3.8-flash では無効な値なので、最速設定は LOW。
+ */
+export const FAST_THINKING = { thinkingLevel: ThinkingLevel.LOW };
