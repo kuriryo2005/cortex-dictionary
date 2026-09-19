@@ -41,6 +41,52 @@ import {
  * 中身の形は変わらない。
  */
 const PRETRAIN_MODEL = arg("model", "gemini-3.8-flash");
+
+/**
+ * 一括処理は本番と同じキーを使わない。
+ *
+ * 一度これをやってアプリを止めた。無料枠は1プロジェクト1日あたりの上限なので、
+ * 2,000語のバッチを流すとライブの検索が使う分まで食い尽くし、実行後は全キーが
+ * 429 になって誰も検索できなくなる。バッチ専用のキーを
+ * PRETRAIN_GEMINI_API_KEY / PRETRAIN_GEMINI_API_KEY_2 … に用意すること。
+ *
+ * どうしても本番のキーで流す場合だけ --use-live-keys を付ける。サービスを
+ * 止めてよい時間帯か、キーに十分な残高があるかを確かめてから使う。
+ */
+function selectKeys(): void {
+  if (process.argv.includes("--use-live-keys")) {
+    console.warn("警告: 本番と同じキーで実行します。");
+    console.warn("クォータを使い切るとアプリの検索が止まります。");
+    return;
+  }
+
+  const dedicated: string[] = [];
+  if (process.env.PRETRAIN_GEMINI_API_KEY) dedicated.push(process.env.PRETRAIN_GEMINI_API_KEY);
+  for (let i = 2; ; i++) {
+    const k = process.env[`PRETRAIN_GEMINI_API_KEY_${i}`];
+    if (!k) break;
+    dedicated.push(k);
+  }
+
+  if (dedicated.length === 0) {
+    console.error("バッチ専用のキーがありません。");
+    console.error("  PRETRAIN_GEMINI_API_KEY（必要なら _2, _3 …）を .env.local に設定してください。");
+    console.error("  本番と同じキーを使うと、無料枠を食い尽くしてアプリの検索が止まります。");
+    console.error("  承知のうえで流す場合は --use-live-keys を付けてください。");
+    process.exit(1);
+  }
+
+  // api/_lib/gemini.ts は GEMINI_API_KEY* を読むので、専用キーで置き換える
+  for (let i = 2; ; i++) {
+    if (process.env[`GEMINI_API_KEY_${i}`] === undefined) break;
+    delete process.env[`GEMINI_API_KEY_${i}`];
+  }
+  process.env.GEMINI_API_KEY = dedicated[0];
+  dedicated.slice(1).forEach((k, i) => (process.env[`GEMINI_API_KEY_${i + 2}`] = k));
+  console.log(`バッチ専用キー ${dedicated.length} 本で実行します。`);
+}
+
+selectKeys();
 // SDK の型は ThinkingLevel の列挙を要求するが、API には文字列で通る。
 const PRETRAIN_THINKING = { thinkingLevel: "LOW" } as unknown as ThinkingConfig;
 
