@@ -3,9 +3,17 @@
  *
  *   npx tsx scripts/build-root-pages.ts
  *
- * `dictionary_cache` を全件読み、`etymologyNodes[].root` で単語をまとめて
+ * `dictionary_cache` を全件読み、scripts/_roots.ts の語根ごとに単語をまとめて
  * `public/root/<slug>/index.html` を吐く。Vite が dist にコピーし、Vercel が
  * 静的ファイルとして配信する（SPA とは別の実体のあるページになる）。
+ *
+ * ## 語根の束ね方
+ *
+ * `etymologyNodes[].root` は AI が自由に書いていて "ulterior/ultimus" や
+ * "16世紀英語" のような値が混ざり、そのままでは束ねられなかった。代わりに
+ * 人手で選んだ語根リストを使い、「綴りに含まれる」かつ「語源の説明文に
+ * ラテン語・ギリシャ語の原形が現れる」の両方を満たす語だけを集める。
+ * この二重条件により、portion を port（運ぶ）に入れるような取り違えを防ぐ。
  *
  * ## なぜ「1単語1ページ」ではなく「語源ルート1ページ」なのか
  *
@@ -31,6 +39,7 @@ import { config } from "dotenv";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getServiceAccessToken } from "../api/_lib/googleAuth.js";
+import { ROOTS } from "./_roots.js";
 import firebaseConfig from "../firebase-applet-config.json" with { type: "json" };
 
 config({ path: ".env.local", override: true });
@@ -50,7 +59,6 @@ interface CachedWord {
   word: string;
   meaning: string;
   etymology: string;
-  roots: { root: string; relation: string }[];
 }
 
 /** Firestore REST の値表現からプレーンな JS 値に戻す。 */
@@ -88,12 +96,7 @@ async function fetchAllCached(token: string): Promise<CachedWord[]> {
       const meaning = fromValue(f.meaning);
       if (!word || !meaning) continue;
 
-      const nodes = (fromValue(f.etymologyNodes) ?? []) as { root?: string; relation?: string }[];
-      const roots = nodes
-        .map((n) => ({ root: String(n?.root ?? "").trim().toLowerCase(), relation: String(n?.relation ?? "") }))
-        .filter((r) => r.root.length >= 2 && /^[a-z-]+$/.test(r.root));
-
-      words.push({ word, meaning, etymology: fromValue(f.etymology) ?? "", roots });
+      words.push({ word, meaning, etymology: fromValue(f.etymology) ?? "" });
     }
     pageToken = data.nextPageToken;
   } while (pageToken);
@@ -111,18 +114,6 @@ function escapeHtml(s: string): string {
 
 function slugify(root: string): string {
   return root.replace(/[^a-z-]/g, "");
-}
-
-/**
- * ルートの意味は relation 文字列（例: "shares same root 'spect' (to look)"）の
- * 括弧から拾う。拾えなければ空にする（もっともらしい嘘を書かない）。
- */
-function guessRootMeaning(relations: string[]): string {
-  for (const r of relations) {
-    const m = /\(([^)]{2,40})\)/.exec(r);
-    if (m) return m[1].trim();
-  }
-  return "";
 }
 
 function renderPage(root: string, meaning: string, words: CachedWord[]): string {
@@ -203,16 +194,34 @@ const token = await getServiceAccessToken();
 const cached = await fetchAllCached(token);
 console.log(`dictionary_cache: ${cached.length} 語`);
 
-const byRoot = new Map<string, { words: Map<string, CachedWord>; relations: string[] }>();
+/**
+ * その語がこの語根に属するか。綴りと語源の説明文の両方を見る。
+ * 語源の説明が無い語は判定できないので採らない（間違った語源を載せない）。
+ */
+function belongsTo(word: CachedWord, entry: (typeof ROOTS)[number]): boolean {
+  const w = word.word.toLowerCase();
+  if (!entry.forms.some((f) => w.includes(f))) return false;
+  const ety = word.etymology.toLowerCase();
+  if (!ety) return false;
+  return entry.sources.some((src) => ety.includes(src.toLowerCase()));
+}
+
+// キャッシュは一般モードと学術モードで別ドキュメントなので、同じ語が2件ある。
+// 先に語で一意化しておく（説明が長いほうを採る）。
+const unique = new Map<string, CachedWord>();
 for (const w of cached) {
-  for (const { root, relation } of w.roots) {
-    let entry = byRoot.get(root);
-    if (!entry) {
-      entry = { words: new Map(), relations: [] };
-      byRoot.set(root, entry);
-    }
-    entry.words.set(w.word.toLowerCase(), w);
-    if (relation) entry.relations.push(relation);
+  const key = w.word.toLowerCase();
+  const prev = unique.get(key);
+  if (!prev || w.etymology.length > prev.etymology.length) unique.set(key, w);
+}
+const words = [...unique.values()];
+console.log(`重複を除いた語数: ${words.length}`);
+
+const byRoot = new Map<string, { entry: (typeof ROOTS)[number]; words: CachedWord[] }>();
+for (const entry of ROOTS) {
+  const matched = words.filter((w) => belongsTo(w, entry));
+  if (matched.length >= MIN_WORDS) {
+    byRoot.set(entry.root, { entry, words: matched });
   }
 }
 
@@ -221,19 +230,16 @@ mkdirSync(OUT_DIR, { recursive: true });
 
 const generated: { root: string; count: number }[] = [];
 
-for (const [root, entry] of byRoot) {
-  if (entry.words.size < MIN_WORDS) continue;
+for (const [root, { entry, words: all }] of byRoot) {
   const slug = slugify(root);
   if (!slug) continue;
 
-  const words = [...entry.words.values()]
-    .sort((a, b) => a.word.localeCompare(b.word))
-    .slice(0, MAX_WORDS_PER_PAGE);
+  const pageWords = [...all].sort((a, b) => a.word.localeCompare(b.word)).slice(0, MAX_WORDS_PER_PAGE);
 
   const dir = join(OUT_DIR, slug);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "index.html"), renderPage(root, guessRootMeaning(entry.relations), words), "utf-8");
-  generated.push({ root, count: words.length });
+  writeFileSync(join(dir, "index.html"), renderPage(root, entry.meaning, pageWords), "utf-8");
+  generated.push({ root, count: pageWords.length });
 }
 
 generated.sort((a, b) => b.count - a.count);
