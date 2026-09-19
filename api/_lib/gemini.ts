@@ -93,36 +93,89 @@ export function reportKeyFailure(client: GoogleGenAI, error: unknown): void {
   const slot = loadSlots().find((s) => s.client === client);
   if (!slot) return;
 
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  const depleted =
+  const message = describeError(error);
+  if (isDepleted(message)) {
+    slot.deadUntil = Date.now() + 6 * 60 * 60 * 1000;
+  } else if (isRateLimited(message)) {
+    slot.deadUntil = Date.now() + 60 * 1000;
+  }
+  // 503（モデルの混雑）はキーの問題ではないので、キーは殺さない
+}
+
+function describeError(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).toLowerCase();
+}
+
+function isDepleted(message: string): boolean {
+  return (
     message.includes("credits are depleted") ||
     message.includes("spending cap") ||
     message.includes("billing") ||
-    message.includes("402");
-  const rateLimited = message.includes("429") || message.includes("resource_exhausted");
+    message.includes("402")
+  );
+}
 
-  if (depleted) {
-    slot.deadUntil = Date.now() + 6 * 60 * 60 * 1000;
-  } else if (rateLimited) {
-    slot.deadUntil = Date.now() + 60 * 1000;
-  }
+function isRateLimited(message: string): boolean {
+  return message.includes("429") || message.includes("resource_exhausted");
+}
+
+/**
+ * モデル側が混んでいるだけで、キーを替えても直らない類のエラーか。
+ * 503 UNAVAILABLE は数秒待てば通ることが多い。
+ */
+function isTransient(message: string): boolean {
+  return (
+    message.includes("503") ||
+    message.includes("unavailable") ||
+    message.includes("high demand") ||
+    message.includes("overloaded")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * 生きているキーを順に試して、最初に成功した結果を返す。
- * 全て失敗したら最後のエラーを投げる。
+ *
+ * 失敗の種類で対応を分ける。
+ *  - キーの問題（402 / 429）… そのキーを一時的に外し、次のキーで引き直す
+ *  - モデルの混雑（503）… キーを替えても無駄なので、少し待って再試行する
+ *  - それ以外（入力不正など）… 即座に投げ返す。粘っても直らない
+ *
+ * 503 をそのまま失敗させると、一時的な混雑でユーザーに「AI の応答に
+ * 失敗しました」が出る。有料で使ってもらう以上ここは粘る。ただし待ちすぎても
+ * 体験が悪いので、混雑での再試行は合計3秒程度までにとどめる。
  */
 export async function withKeyFailover<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
-  const attempts = Math.max(1, Math.min(loadSlots().length, 4));
-  let lastError: unknown;
+  const keyAttempts = Math.max(1, Math.min(loadSlots().length, 4));
+  const backoffMs = [400, 900, 1800];
 
-  for (let i = 0; i < attempts; i++) {
+  let lastError: unknown;
+  let transientRetries = 0;
+
+  for (let i = 0; i < keyAttempts; ) {
     const ai = getClient();
     try {
       return await fn(ai);
     } catch (e) {
-      reportKeyFailure(ai, e);
       lastError = e;
+      const message = describeError(e);
+
+      if (isTransient(message) && transientRetries < backoffMs.length) {
+        await sleep(backoffMs[transientRetries]);
+        transientRetries++;
+        continue; // キーの試行回数は消費しない
+      }
+
+      if (isDepleted(message) || isRateLimited(message)) {
+        reportKeyFailure(ai, e);
+        i++;
+        continue;
+      }
+
+      throw e;
     }
   }
   throw lastError;
