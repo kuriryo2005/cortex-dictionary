@@ -34,6 +34,27 @@ const MIN_WORD_LENGTH = 2;
  * 記号や数字だけの意味不明な入力を AI に投げてトークンを無駄にしないためのガード。
  */
 const VALID_WORD_PATTERN = /^[a-z][a-z' -]*$/i;
+
+/**
+ * 明らかに英単語ではない綴りを、AI に投げる前に弾く。
+ *
+ * 共有キャッシュに "bbbbbbb" が入っているのを見つけた。文字種のチェックだけ
+ * では通ってしまい、生成の実費がかかったうえにキャッシュまで汚れる。
+ * 判定は「英単語ならまず起きないこと」だけに絞り、実在する語を誤って
+ * 弾かないようにしている（"aa"（溶岩）や "nth" のような語もあるため、
+ * 短い語や母音の有無だけでは判断しない）。
+ */
+function looksLikeGibberish(word: string): boolean {
+  const w = word.toLowerCase();
+
+  // 同じ文字が3つ以上続く。英語では "aaa" のような綴りは実質ない
+  if (/([a-z]){2,}/.test(w)) return true;
+
+  // 5文字以上で母音（y を含む）が1つも無い
+  if (w.length >= 5 && !/[aeiouy]/.test(w)) return true;
+
+  return false;
+}
 /** 部分結果を送る最小間隔。細かく送りすぎても描画が追いつかない。 */
 const PARTIAL_INTERVAL_MS = 200;
 
@@ -78,7 +99,7 @@ export async function POST(request: Request): Promise<Response> {
     if (word.length > MAX_WORD_LENGTH) {
       return errorResponse(400, `単語が長すぎます（${MAX_WORD_LENGTH}文字まで）。`);
     }
-    if (!VALID_WORD_PATTERN.test(word)) {
+    if (!VALID_WORD_PATTERN.test(word) || looksLikeGibberish(word)) {
       return errorResponse(400, "英単語として認識できない入力です。");
     }
 
