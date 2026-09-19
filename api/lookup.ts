@@ -12,7 +12,7 @@
 
 import { withAuth, sseEvent, SSE_HEADERS, errorResponse } from "./_lib/handler.js";
 import {
-  getClient,
+  withKeyFailover,
   MODEL,
   WORD_SCHEMA,
   FAST_THINKING,
@@ -92,16 +92,18 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });
     }
 
-    const ai = getClient();
-    const stream = await ai.models.generateContentStream({
-      model: MODEL,
-      contents: buildLookupPrompt(word, mode),
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: WORD_SCHEMA,
-        thinkingConfig: FAST_THINKING,
-      },
-    });
+    // キーが死んでいたら次のキーで引き直す（api/_lib/gemini.ts の withKeyFailover）
+    const stream = await withKeyFailover((ai) =>
+      ai.models.generateContentStream({
+        model: MODEL,
+        contents: buildLookupPrompt(word, mode),
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: WORD_SCHEMA,
+          thinkingConfig: FAST_THINKING,
+        },
+      })
+    );
 
     const encoder = new TextEncoder();
 
@@ -154,15 +156,17 @@ export async function POST(request: Request): Promise<Response> {
           ) {
             console.warn(`[api:lookup] suspicious correction "${word}" -> "${final.word}", retrying strict`);
             try {
-              const retryRes = await getClient().models.generateContent({
-                model: MODEL,
-                contents: buildLookupPrompt(word, mode, { forceExactSpelling: true }),
-                config: {
-                  responseMimeType: "application/json",
-                  responseSchema: WORD_SCHEMA,
-                  thinkingConfig: FAST_THINKING,
-                },
-              });
+              const retryRes = await withKeyFailover((ai) =>
+                ai.models.generateContent({
+                  model: MODEL,
+                  contents: buildLookupPrompt(word, mode, { forceExactSpelling: true }),
+                  config: {
+                    responseMimeType: "application/json",
+                    responseSchema: WORD_SCHEMA,
+                    thinkingConfig: FAST_THINKING,
+                  },
+                })
+              );
               const retryText = retryRes.text;
               if (retryText) final = JSON.parse(retryText) as Record<string, unknown>;
             } catch (retryError) {

@@ -30,11 +30,17 @@ export const MODEL = "gemini-3.8-flash";
  * GEMINI_API_KEY_3, ... を環境変数に足すと、リクエストのたびに順番に
  * キーを切り替えて負荷を分散する（1キーだけの場合は従来どおり単一キーで動く）。
  */
-let clients: GoogleGenAI[] | null = null;
+interface KeySlot {
+  client: GoogleGenAI;
+  /** このミリ秒まではこのキーを使わない（0 は健全）。 */
+  deadUntil: number;
+}
+
+let slots: KeySlot[] | null = null;
 let roundRobinIndex = 0;
 
-function loadClients(): GoogleGenAI[] {
-  if (clients) return clients;
+function loadSlots(): KeySlot[] {
+  if (slots) return slots;
 
   const keys: string[] = [];
   const primary = process.env.GEMINI_API_KEY;
@@ -49,16 +55,77 @@ function loadClients(): GoogleGenAI[] {
     throw new Error("GEMINI_API_KEY が設定されていません（サーバー環境変数）。");
   }
 
-  clients = keys.map((apiKey) => new GoogleGenAI({ apiKey }));
-  return clients;
+  slots = keys.map((apiKey) => ({ client: new GoogleGenAI({ apiKey }), deadUntil: 0 }));
+  return slots;
 }
 
-/** 呼び出すたびにラウンドロビンで次のキーのクライアントを返す。 */
+/** 現在使えるキーの本数（全滅していれば 0）。 */
+export function healthyKeyCount(): number {
+  const now = Date.now();
+  return loadSlots().filter((s) => s.deadUntil <= now).length;
+}
+
+/** 呼び出すたびにラウンドロビンで次の「生きている」キーのクライアントを返す。 */
 export function getClient(): GoogleGenAI {
-  const pool = loadClients();
-  const c = pool[roundRobinIndex % pool.length];
-  roundRobinIndex = (roundRobinIndex + 1) % pool.length;
-  return c;
+  const pool = loadSlots();
+  const now = Date.now();
+
+  // 1周だけ回して健全なキーを探す
+  for (let i = 0; i < pool.length; i++) {
+    const slot = pool[roundRobinIndex % pool.length];
+    roundRobinIndex = (roundRobinIndex + 1) % pool.length;
+    if (slot.deadUntil <= now) return slot.client;
+  }
+
+  // 全部死んでいるときは、いちばん早く復帰するキーで一応試す
+  return pool.reduce((a, b) => (a.deadUntil <= b.deadUntil ? a : b)).client;
+}
+
+/**
+ * 呼び出しが失敗したキーを一時的に外す。
+ *
+ * クレジット切れ（402）や課金上限超過は日をまたぐまで直らないことが多いので
+ * 長めに、レート制限（429）は短めに休ませる。キーを増やしていても、死んだ
+ * キーがローテーションに残っていると一定割合のリクエストが失敗し続けるため、
+ * これが無いと「12本挿したのに時々失敗する」状態になる。
+ */
+export function reportKeyFailure(client: GoogleGenAI, error: unknown): void {
+  const slot = loadSlots().find((s) => s.client === client);
+  if (!slot) return;
+
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const depleted =
+    message.includes("credits are depleted") ||
+    message.includes("spending cap") ||
+    message.includes("billing") ||
+    message.includes("402");
+  const rateLimited = message.includes("429") || message.includes("resource_exhausted");
+
+  if (depleted) {
+    slot.deadUntil = Date.now() + 6 * 60 * 60 * 1000;
+  } else if (rateLimited) {
+    slot.deadUntil = Date.now() + 60 * 1000;
+  }
+}
+
+/**
+ * 生きているキーを順に試して、最初に成功した結果を返す。
+ * 全て失敗したら最後のエラーを投げる。
+ */
+export async function withKeyFailover<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+  const attempts = Math.max(1, Math.min(loadSlots().length, 4));
+  let lastError: unknown;
+
+  for (let i = 0; i < attempts; i++) {
+    const ai = getClient();
+    try {
+      return await fn(ai);
+    } catch (e) {
+      reportKeyFailure(ai, e);
+      lastError = e;
+    }
+  }
+  throw lastError;
 }
 
 export type ModeSlug = "gen" | "aca";
