@@ -50,7 +50,7 @@ if (product) {
 } else {
   product = await stripe<Product>("POST", "/products", {
     name: PRODUCT_NAME,
-    description: "検索1日300語・保存無制限・ナレッジマップ全開放・一括抽出・発音・統計・Ankiエクスポート",
+    description: "検索1日100語・保存無制限・ナレッジマップ全開放・一括抽出・発音・統計・Ankiエクスポート",
   });
   console.log(`商品を作成しました: ${product.id}`);
 }

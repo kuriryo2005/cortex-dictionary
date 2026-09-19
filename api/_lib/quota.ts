@@ -118,7 +118,7 @@ export async function checkAndConsumeLookupQuota(idToken: string, uid: string): 
           upgradable: plan === "free",
           message:
             plan === "free"
-              ? `無料プランの${period}の検索上限（${max}語）に達しました。${resetNote} Pro にすると1日300語まで検索できます。`
+              ? `無料プランの${period}の検索上限（${max}語）に達しました。${resetNote} Pro にすると1日100語まで検索できます。`
               : `${period}の検索上限（${max}語）に達しました。${resetNote}`,
         };
 

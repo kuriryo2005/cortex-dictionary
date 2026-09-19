@@ -81,7 +81,7 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(400, "英単語として認識できない入力です。");
     }
 
-    // プラン別の検索上限（Free 日15 / Pro 日300）。キャッシュヒットはここに来ないので
+    // プラン別の検索上限（Free 日10 / Pro 日100）。キャッシュヒットはここに来ないので
     // 実際に AI 呼び出しが発生する検索だけがカウントされる。
     const authHeader = request.headers.get("authorization") ?? "";
     const idToken = authHeader.replace(/^Bearer\s+/i, "").trim();

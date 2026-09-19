@@ -22,7 +22,7 @@ export interface PlanStatus {
 /** 契約状態が取れないときに使う既定値（常に厳しい側＝free に倒す）。 */
 export const FREE_STATUS: PlanStatus = {
   plan: "free",
-  quota: { day: 15, week: 60, month: 150 },
+  quota: { day: 10, week: 40, month: 100 },
   wordLimit: 200,
   billingEnabled: false,
 };
