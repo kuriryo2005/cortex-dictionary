@@ -201,8 +201,17 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
           </div>
         </section>
 
-        <footer className="mt-24 border-t border-[#EDEFF1] pt-6 text-[11px] text-[#8A9199]">
-          Cortex Dictionary
+        <footer className="mt-24 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[#EDEFF1] pt-6 text-[11px] text-[#8A9199]">
+          <span>Cortex Dictionary</span>
+          <a href="/legal/terms.html" className="hover:text-[#1A1C1E]">
+            利用規約
+          </a>
+          <a href="/legal/privacy.html" className="hover:text-[#1A1C1E]">
+            プライバシーポリシー
+          </a>
+          <a href="/legal/tokushoho.html" className="hover:text-[#1A1C1E]">
+            特定商取引法に基づく表記
+          </a>
         </footer>
       </div>
     </div>

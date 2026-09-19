@@ -182,8 +182,22 @@ export const UpgradeModal: React.FC<Props> = ({ open, onClose, status, reason })
                   </p>
                 )}
                 {!isPro && status.billingEnabled && (
-                  <p className="text-xs text-[#8A9199] text-center">
+                  <p className="text-xs text-[#8A9199] text-center leading-relaxed">
                     決済は Stripe が処理します。カード情報がこのアプリに保存されることはありません。
+                    <br />
+                    お申し込みをもって{" "}
+                    <a href="/legal/terms.html" target="_blank" rel="noreferrer" className="underline">
+                      利用規約
+                    </a>
+                    {" と "}
+                    <a href="/legal/privacy.html" target="_blank" rel="noreferrer" className="underline">
+                      プライバシーポリシー
+                    </a>
+                    {" に同意したものとみなします（"}
+                    <a href="/legal/tokushoho.html" target="_blank" rel="noreferrer" className="underline">
+                      特商法表記
+                    </a>
+                    ）。
                   </p>
                 )}
               </div>
