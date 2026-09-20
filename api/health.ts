@@ -55,10 +55,15 @@ export async function GET(): Promise<Response> {
     process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_MONTHLY && process.env.STRIPE_WEBHOOK_SECRET
   );
 
+  // 単語の保存はサービスアカウント経由（api/save-words.ts）なので、
+  // これが無いと誰も単語を保存できない。設定漏れに気付けるよう外に出す。
+  const canSaveWords = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+
   return jsonResponse({
     // 収録済みの単語の検索と復習はキーが無くても動くので、ここが false でも
     // アプリ全体が止まっているわけではない（新しい単語の生成だけが止まる）。
     canGenerate: cached.healthy > 0,
+    canSaveWords,
     keys: { healthy: cached.healthy, total: cached.total },
     billingConfigured,
     checkedAt: new Date(cached.at).toISOString(),
