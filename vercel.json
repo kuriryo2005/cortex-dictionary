@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "headers": [
+    {
+      "comment": "ブランド画像（PWA アイコン・OGP・X のヘッダー）だけ、他サイトからの取得を許す。どれも誰でも見られる公開素材で、秘密は含まない。X のプロフィールへ設定する際に、ブラウザからこれらを読み出す必要があった。/api/* には付けない（認証つきの応答を他サイトに読ませない）。",
+      "source": "/(icons/.*|og.png|brand-x-header.png)",
+      "headers": [{ "key": "Access-Control-Allow-Origin", "value": "*" }]
+    }
+  ]
+}
