@@ -9,7 +9,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
-import { withKeyFailover, MODEL, FAST_THINKING } from "./_lib/gemini.js";
+import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
 export const config = { runtime: "nodejs" };
@@ -38,34 +38,36 @@ export async function POST(request: Request): Promise<Response> {
       .filter(Boolean)
       .join(", ");
 
-    const response = await withKeyFailover((ai) =>
-      ai.models.generateContent({
-        model: MODEL,
-        contents: `Analyze the learning progress for the English word "${word}" (Meaning: ${meaning}).
-  Review History:
-  ${historyStr || "First time being reviewed."}
+    const response = await withModelFallback((model) =>
+      withKeyFailover((ai) =>
+        ai.models.generateContent({
+          model,
+          contents: `Analyze the learning progress for the English word "${word}" (Meaning: ${meaning}).
+    Review History:
+    ${historyStr || "First time being reviewed."}
 
-  Based on the retention patterns, linguistic similarity to other words (like ${synonymsStr || "none"}), and common pitfalls for this type of word, determine the optimal "Next Review Date".
-  Also provide a short "AI Analysis" in Japanese explaining why this word might be difficult for the user (e.g., confusion with similar roots, structural complexity).
+    Based on the retention patterns, linguistic similarity to other words (like ${synonymsStr || "none"}), and common pitfalls for this type of word, determine the optimal "Next Review Date".
+    Also provide a short "AI Analysis" in Japanese explaining why this word might be difficult for the user (e.g., confusion with similar roots, structural complexity).
 
-  Current time (Unix ms): ${Date.now()}
+    Current time (Unix ms): ${Date.now()}
 
-  Return JSON with:
-  - nextReviewAt: number (Unix timestamp in milliseconds, must be in the future)
-  - aiAnalysis: string (In Japanese)`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              nextReviewAt: { type: Type.NUMBER },
-              aiAnalysis: { type: Type.STRING },
+    Return JSON with:
+    - nextReviewAt: number (Unix timestamp in milliseconds, must be in the future)
+    - aiAnalysis: string (In Japanese)`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                nextReviewAt: { type: Type.NUMBER },
+                aiAnalysis: { type: Type.STRING },
+              },
+              required: ["nextReviewAt", "aiAnalysis"],
             },
-            required: ["nextReviewAt", "aiAnalysis"],
+            thinkingConfig: FAST_THINKING,
           },
-          thinkingConfig: FAST_THINKING,
-        },
-      })
+        })
+      )
     );
 
     const text = response.text;

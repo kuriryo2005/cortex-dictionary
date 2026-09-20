@@ -13,6 +13,7 @@
 import { withAuth, sseEvent, SSE_HEADERS, errorResponse, classifyAiError } from "./_lib/handler.js";
 import {
   withKeyFailover,
+  withModelFallback,
   MODEL,
   WORD_SCHEMA,
   FAST_THINKING,
@@ -113,17 +114,19 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });
     }
 
-    // キーが死んでいたら次のキーで引き直す（api/_lib/gemini.ts の withKeyFailover）
-    const stream = await withKeyFailover((ai) =>
-      ai.models.generateContentStream({
-        model: MODEL,
-        contents: buildLookupPrompt(word, mode),
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: WORD_SCHEMA,
-          thinkingConfig: FAST_THINKING,
-        },
-      })
+    // キーが死んでいたら次のキーで、モデルが詰まっていたら次のモデルで引き直す
+    const stream = await withModelFallback((model) =>
+      withKeyFailover((ai) =>
+        ai.models.generateContentStream({
+          model,
+          contents: buildLookupPrompt(word, mode),
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: WORD_SCHEMA,
+            thinkingConfig: FAST_THINKING,
+          },
+        })
+      )
     );
 
     const encoder = new TextEncoder();

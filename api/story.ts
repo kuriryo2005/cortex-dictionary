@@ -4,7 +4,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
-import { withKeyFailover, MODEL, FAST_THINKING } from "./_lib/gemini.js";
+import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -16,13 +16,15 @@ export async function POST(request: Request): Promise<Response> {
 
     if (!word) return errorResponse(400, "単語が指定されていません。");
 
-    const response = await withKeyFailover((ai) =>
-      ai.models.generateContent({
-        model: MODEL,
-        contents: `英語の単語「${word}」（意味: ${meaning}）について、その語源や歴史的な背景を、学習者がワクワクするような「30秒で読めるショートストーリー」として日本語で語ってください。
-背景情報: ${etymology}`,
-        config: { thinkingConfig: FAST_THINKING },
-      })
+    const response = await withModelFallback((model) =>
+      withKeyFailover((ai) =>
+        ai.models.generateContent({
+          model,
+          contents: `英語の単語「${word}」（意味: ${meaning}）について、その語源や歴史的な背景を、学習者がワクワクするような「30秒で読めるショートストーリー」として日本語で語ってください。
+  背景情報: ${etymology}`,
+          config: { thinkingConfig: FAST_THINKING },
+        })
+      )
     );
 
     return jsonResponse({ story: response.text || "語源のストーリーは現在準備中です。" });

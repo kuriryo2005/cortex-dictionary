@@ -11,7 +11,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
-import { withKeyFailover, MODEL, FAST_THINKING } from "./_lib/gemini.js";
+import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
 export const config = { runtime: "nodejs" };
@@ -56,29 +56,31 @@ export async function POST(request: Request): Promise<Response> {
       : [];
     const knownSet = new Set(known);
 
-    const response = await withKeyFailover((ai) =>
-      ai.models.generateContent({
-        model: MODEL,
-        contents:
-          `Extract vocabulary worth learning from the English text below.\n\n` +
-          `Rules:\n` +
-          `- Target an advanced learner (CEFR B2 and above). Skip basic words.\n` +
-          `- Return the dictionary form (lemma): "running" → "run", "studies" → "study".\n` +
-          `- No proper nouns, numbers, or duplicates.\n` +
-          `- At most ${MAX_CANDIDATES} entries, ordered by usefulness.\n` +
-          `- meaningShort: a short Japanese gloss (under 30 characters).\n` +
-          `- level: one of B2, C1, C2, technical.\n` +
-          `- sentence: the sentence from the text where the word appears, verbatim.\n` +
-          (known.length
-            ? `- The learner already knows these words, exclude them:\n${known.join(", ")}\n`
-            : "") +
-          `\n--- TEXT ---\n${text}`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: SCHEMA,
-          thinkingConfig: FAST_THINKING,
-        },
-      })
+    const response = await withModelFallback((model) =>
+      withKeyFailover((ai) =>
+        ai.models.generateContent({
+          model,
+          contents:
+            `Extract vocabulary worth learning from the English text below.\n\n` +
+            `Rules:\n` +
+            `- Target an advanced learner (CEFR B2 and above). Skip basic words.\n` +
+            `- Return the dictionary form (lemma): "running" → "run", "studies" → "study".\n` +
+            `- No proper nouns, numbers, or duplicates.\n` +
+            `- At most ${MAX_CANDIDATES} entries, ordered by usefulness.\n` +
+            `- meaningShort: a short Japanese gloss (under 30 characters).\n` +
+            `- level: one of B2, C1, C2, technical.\n` +
+            `- sentence: the sentence from the text where the word appears, verbatim.\n` +
+            (known.length
+              ? `- The learner already knows these words, exclude them:\n${known.join(", ")}\n`
+              : "") +
+            `\n--- TEXT ---\n${text}`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: SCHEMA,
+            thinkingConfig: FAST_THINKING,
+          },
+        })
+      )
     );
 
     let parsed: { candidates?: unknown };

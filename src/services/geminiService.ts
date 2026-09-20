@@ -73,9 +73,16 @@ function trackLookupSource(source: "local" | "firestore" | "ai", mode: Dictionar
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /**
+   * 失敗の種類。サーバー（api/_lib/handler.ts の classifyAiError）が付ける。
+   * "capacity" は提供側の利用枠が尽きている状態で、利用者の操作では直らない。
+   * 呼び出し側は、ただエラーを出すのではなく収録済みの単語を案内できる。
+   */
+  readonly reason?: "capacity" | "busy";
+  constructor(status: number, message: string, reason?: "capacity" | "busy") {
     super(message);
     this.status = status;
+    this.reason = reason;
     this.name = "ApiError";
   }
 }
@@ -181,8 +188,12 @@ async function streamLookup(
   });
 
   if (!response.ok) {
-    const detail = (await response.json().catch(() => ({}))) as { error?: unknown };
-    throw new ApiError(response.status, String(detail.error ?? "検索に失敗しました。"));
+    const detail = (await response.json().catch(() => ({}))) as { error?: unknown; reason?: unknown };
+    throw new ApiError(
+      response.status,
+      String(detail.error ?? "検索に失敗しました。"),
+      detail.reason === "capacity" || detail.reason === "busy" ? detail.reason : undefined
+    );
   }
   if (!response.body) throw new ApiError(502, "応答が空でした。");
 
@@ -191,6 +202,7 @@ async function streamLookup(
   let buffer = "";
   let final: WordDetail | null = null;
   let failure: string | null = null;
+  let failureReason: "capacity" | "busy" | undefined;
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -205,7 +217,7 @@ async function streamLookup(
       const line = raw.trim();
       if (!line.startsWith("data:")) continue;
 
-      let event: { type?: string; payload?: unknown; message?: string };
+      let event: { type?: string; payload?: unknown; message?: string; reason?: string };
       try {
         event = JSON.parse(line.slice(5).trim());
       } catch {
@@ -218,11 +230,13 @@ async function streamLookup(
         final = event.payload as WordDetail;
       } else if (event.type === "error") {
         failure = event.message ?? "AI の応答に失敗しました。";
+        failureReason =
+          event.reason === "capacity" || event.reason === "busy" ? event.reason : undefined;
       }
     }
   }
 
-  if (failure) throw new ApiError(502, failure);
+  if (failure) throw new ApiError(502, failure, failureReason);
   if (!final) throw new ApiError(502, "AI の応答が完了しませんでした。");
   return final;
 }

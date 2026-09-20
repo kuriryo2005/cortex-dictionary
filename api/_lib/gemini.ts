@@ -23,6 +23,54 @@ import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 export const MODEL = "gemini-3.8-flash";
 
 /**
+ * MODEL が使えないときに順に試す代替モデル。
+ *
+ * 本番で gemini-3.8-flash が 503（This model is currently experiencing high
+ * demand）を返し続け、検索が丸ごと止まった。キーの自動退避は作ってあったが、
+ * モデル側が詰まったときの逃げ道が無く、1モデルに全面依存していた。
+ *
+ * 品質の近い 3.6-flash を先に、最後に軽くて安い 3.5-flash-lite を置く。
+ * 解説がやや簡素になっても、止まるよりははるかにいい。
+ */
+export const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"] as const;
+
+/**
+ * モデルが一時的に使えないことを示すエラーか。
+ * 503（混雑）と 404（提供終了・2.5系で実際に起きた）を対象にする。
+ */
+export function isModelUnavailable(error: unknown): boolean {
+  const m = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    m.includes("503") ||
+    m.includes("high demand") ||
+    m.includes("overloaded") ||
+    m.includes("unavailable") ||
+    m.includes("404") ||
+    m.includes("no longer available")
+  );
+}
+
+/**
+ * MODEL で試し、モデル側の都合で駄目なら代替モデルへ降りる。
+ *
+ * `run` はモデル名を受け取って呼び出しを行う。キーの切り替えは
+ * withKeyFailover が内側で面倒を見るので、ここはモデルだけを変える。
+ */
+export async function withModelFallback<T>(run: (model: string) => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (const model of [MODEL, ...FALLBACK_MODELS]) {
+    try {
+      return await run(model);
+    } catch (e) {
+      lastError = e;
+      if (!isModelUnavailable(e)) throw e; // モデルのせいでないならすぐ返す
+      console.warn(`[gemini] ${model} が使えないので次のモデルを試します`);
+    }
+  }
+  throw lastError;
+}
+
+/**
  * 複数の Gemini API キーをラウンドロビンで使い分ける。
  *
  * 無料枠は1プロジェクト（1キー）あたりのレート制限なので、検索が集中すると

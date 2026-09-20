@@ -4,7 +4,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
-import { withKeyFailover, MODEL, FAST_THINKING } from "./_lib/gemini.js";
+import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
 export const config = { runtime: "nodejs" };
@@ -14,28 +14,30 @@ export async function POST(request: Request): Promise<Response> {
     const root = String(body.root ?? "").trim().slice(0, 64);
     if (!root) return errorResponse(400, "語根が指定されていません。");
 
-    const response = await withKeyFailover((ai) =>
-      ai.models.generateContent({
-        model: MODEL,
-        contents: `Find 3 more English words that share the same etymological root "${root}".
-  Return a JSON array of objects with fields: word, meaning (in Japanese), and root (the string "${root}").`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                word: { type: Type.STRING },
-                meaning: { type: Type.STRING },
-                root: { type: Type.STRING },
+    const response = await withModelFallback((model) =>
+      withKeyFailover((ai) =>
+        ai.models.generateContent({
+          model,
+          contents: `Find 3 more English words that share the same etymological root "${root}".
+    Return a JSON array of objects with fields: word, meaning (in Japanese), and root (the string "${root}").`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  word: { type: Type.STRING },
+                  meaning: { type: Type.STRING },
+                  root: { type: Type.STRING },
+                },
+                required: ["word", "meaning", "root"],
               },
-              required: ["word", "meaning", "root"],
             },
+            thinkingConfig: FAST_THINKING,
           },
-          thinkingConfig: FAST_THINKING,
-        },
-      })
+        })
+      )
     );
 
     const text = response.text;
