@@ -10,19 +10,150 @@
 
 import React from "react";
 import { motion } from "motion/react";
-import { Loader2 } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 import { Deck, SavedWord, UserStats } from "../types";
 import { computeDeckProgress, computeStats } from "../lib/stats";
+import type { DailyCycle, StageKey } from "../lib/cycle";
+import { countAgain } from "../lib/srs";
 
 interface Props {
   words: SavedWord[];
   decks: Deck[];
   stats: UserStats | null;
   enriching: { remaining: number; running: boolean };
+  cycle: DailyCycle;
   onStartReview: (scope: "due" | "overdue" | "fresh" | "all") => void;
+  onStartStage: (key: StageKey) => void;
   onOpenExtract: () => void;
   onSelectDeck: (deckId: string | null) => void;
+  onWordClick: (word: SavedWord) => void;
 }
+
+/** 次にもう一度出る時刻を「あと N 分」で示す。 */
+function untilLabel(at: number | undefined, now = Date.now()): string {
+  if (at == null) return "";
+  const min = Math.max(1, Math.round((at - now) / 60000));
+  if (min < 60) return `あと ${min} 分`;
+  return `あと ${Math.round(min / 60)} 時間`;
+}
+
+/**
+ * 今日のサイクル。3 段を縦に並べ、いま手を付けるべき段だけを濃く出す。
+ *
+ * 数値を並べるだけのダッシュボードは「今日は何をどこまでやれば終わりか」に
+ * 答えてくれない。段と残り枚数を出して、終わりを見えるようにする。
+ */
+const Cycle: React.FC<{
+  cycle: DailyCycle;
+  onStartStage: (key: StageKey) => void;
+}> = ({ cycle, onStartStage }) => {
+  // 先頭の未完了段が「いま手を付ける段」
+  const activeKey = cycle.stages.find((s) => s.words.length > 0)?.key;
+
+  return (
+    <section className="section">
+      <div className="flex items-baseline justify-between mb-5">
+        <h3 className="section-label !mb-0">今日のサイクル</h3>
+        <span className="text-[11px] font-bold text-[#8A9199] tabular-nums">
+          {Math.round(cycle.progress * 100)}%
+        </span>
+      </div>
+
+      <div className="h-0.5 bg-[#F1F3F5] mb-7">
+        <div
+          className="h-0.5 bg-[#1A1C1E] transition-all duration-500"
+          style={{ width: `${cycle.progress * 100}%` }}
+        />
+      </div>
+
+      <ol>
+        {cycle.stages.map((stage, i) => {
+          const total = stage.words.length + stage.done;
+          const idle = total === 0;
+          const active = stage.key === activeKey;
+
+          return (
+            <li
+              key={stage.key}
+              className="flex items-start gap-4 py-4 border-t border-[#F1F3F5] first:border-t-0 first:pt-0"
+            >
+              {/* 段の番号。済んだ段はチェックに変わる */}
+              <span
+                className={`mt-0.5 w-5 h-5 shrink-0 flex items-center justify-center text-[10px] font-black tabular-nums ${
+                  stage.complete && !idle
+                    ? "bg-[#1A1C1E] text-white"
+                    : active
+                      ? "bg-[#2A5CFF] text-white"
+                      : "border border-[#EAECEF] text-[#C9CDD2]"
+                }`}
+              >
+                {stage.complete && !idle ? <Check className="w-3 h-3" /> : i + 1}
+              </span>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-3 flex-wrap">
+                  <span
+                    className={`text-sm font-black ${
+                      idle ? "text-[#C9CDD2]" : "text-[#1A1C1E]"
+                    }`}
+                  >
+                    {stage.title}
+                  </span>
+                  <span className="text-[11px] font-bold text-[#8A9199] tabular-nums">
+                    {idle ? "対象なし" : `${stage.done} / ${total}`}
+                  </span>
+                </div>
+                <p
+                  className={`text-[11px] leading-relaxed mt-1 ${
+                    idle ? "text-[#C9CDD2]" : "text-[#656E77]"
+                  }`}
+                >
+                  {stage.hint}
+                </p>
+              </div>
+
+              {stage.words.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onStartStage(stage.key)}
+                  className={`shrink-0 text-xs font-bold border-b transition-colors ${
+                    active
+                      ? "text-[#2A5CFF] border-[#2A5CFF]"
+                      : "text-[#8A9199] border-transparent hover:text-[#1A1C1E] hover:border-[#1A1C1E]"
+                  }`}
+                >
+                  {stage.words.length} 語を始める
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+
+      {cycle.finished && (
+        <p className="mt-6 pl-4 border-l-2 border-[#1A1C1E] text-xs text-[#656E77] leading-loose">
+          今日の分は終わりました。ここで止めるのが、明日も続けるいちばんの近道です。
+        </p>
+      )}
+
+      {cycle.soonAgain.length > 0 && (
+        <div className="mt-8 pt-6 border-t border-[#F1F3F5]">
+          <p className="text-[11px] font-bold text-[#8A9199] mb-3">
+            今日この後もう一度出る語 {cycle.soonAgain.length}
+          </p>
+          <div className="flex flex-wrap gap-x-5 gap-y-2">
+            {cycle.soonAgain.slice(0, 8).map((w) => (
+              <span key={w.id} className="text-[11px] text-[#656E77]">
+                <b className="font-bold text-[#1A1C1E]">{w.word}</b>{" "}
+                <span className="tabular-nums text-[#8A9199]">{untilLabel(w.nextReviewAt)}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+};
 
 /** 数値ひとつ。押せるものは下線で示す。 */
 const Metric: React.FC<{
@@ -58,9 +189,12 @@ export const Dashboard: React.FC<Props> = ({
   decks,
   stats,
   enriching,
+  cycle,
   onStartReview,
+  onStartStage,
   onOpenExtract,
   onSelectDeck,
+  onWordClick,
 }) => {
   const s = computeStats(words);
   const progress = computeDeckProgress(words, decks);
@@ -134,6 +268,39 @@ export const Dashboard: React.FC<Props> = ({
           </p>
         )}
       </section>
+
+      <Cycle cycle={cycle} onStartStage={onStartStage} />
+
+      {/* 何度やっても抜けない語。間隔を伸ばしても効かないので別の入口を出す */}
+      {cycle.leeches.length > 0 && (
+        <section className="section">
+          <h3 className="section-label">抜けない語 {cycle.leeches.length}</h3>
+          <p className="text-[11px] text-[#656E77] leading-loose mb-5">
+            間隔を伸ばしても抜けない語です。カードをめくり直すより、語源や例文から
+            入れ直すほうが早いことが多いので、詳細を開いて別の手がかりを付けてください。
+          </p>
+          <div>
+            {cycle.leeches.slice(0, 6).map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => onWordClick(w)}
+                className="w-full text-left group py-3 border-t border-[#F1F3F5] first:border-t-0 first:pt-0 flex items-baseline justify-between gap-4"
+              >
+                <span className="min-w-0">
+                  <span className="text-xs font-bold text-[#1A1C1E] group-hover:text-[#2A5CFF] transition-colors">
+                    {w.word}
+                  </span>
+                  <span className="text-[11px] text-[#8A9199] ml-3">{w.meaning}</span>
+                </span>
+                <span className="shrink-0 text-[10px] font-bold text-[#DC2626] tabular-nums">
+                  忘れた {countAgain(w)} 回
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="section">
         <h3 className="section-label">直近7日の追加</h3>

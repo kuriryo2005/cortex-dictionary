@@ -26,6 +26,11 @@ export interface MapNode {
   degree: number;
   /** 復習の遅れ。0 なら遅れていない */
   daysOverdue: number;
+  /**
+   * 連結成分の番号。同じ房に属するノードは同じ番号を持つ。
+   * 房ごとに色を変えるために使う（線を目で追わなくても仲間が分かる）。
+   */
+  cluster: number;
   data?: SavedWord;
 }
 
@@ -40,6 +45,19 @@ export interface MapLink {
 export interface MapGraph {
   nodes: MapNode[];
   links: MapLink[];
+  /** 房の一覧。大きい順 */
+  clusters: Cluster[];
+  /** ノード id → 隣接ノード id。焦点表示とハイライトで使う */
+  adjacency: Map<string, Set<string>>;
+}
+
+export interface Cluster {
+  id: number;
+  /** その房に含まれる保存済みの語 */
+  words: SavedWord[];
+  /** 房の中心にある語根（語源レイヤーのとき）。無ければ空 */
+  roots: string[];
+  size: number;
 }
 
 const DAY = 1000 * 60 * 60 * 24;
@@ -76,7 +94,12 @@ function overdueDays(word: SavedWord): number {
  * respect を両方保存していても線が出ないことがあった。語根を中間ノードにすると、
  * 同じ語根の語は列挙の有無に関係なく必ず一つの房に集まる。
  */
-export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
+export function buildGraph(words: SavedWord[], layers: GraphLayer | GraphLayer[]): MapGraph {
+  // レイヤーは重ねられる。語源だけでは孤立して見える語も、類義語を重ねると
+  // どこかの房につながることがある。「つながり」を見る図なので、
+  // 排他のタブより重ね合わせのほうが目的に合う。
+  const active = new Set<GraphLayer>(Array.isArray(layers) ? layers : [layers]);
+
   const nodes: MapNode[] = [];
   const byId = new Map<string, MapNode>();
   /** 保存済みの語だけを引く索引。ゴーストは入れない */
@@ -123,6 +146,7 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
       importance: typeof word.importanceScore === "number" ? word.importanceScore : 0.5,
       degree: 0,
       daysOverdue: overdueDays(word),
+      cluster: -1,
       data: word,
     });
     savedByWord.set(wordKey(word.word), node);
@@ -138,9 +162,10 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
       importance: 0.3,
       degree: 0,
       daysOverdue: 0,
+      cluster: -1,
     });
 
-  if (layer === "etymology") {
+  if (active.has("etymology")) {
     for (const word of words) {
       const self = byId.get(word.id);
       if (!self) continue;
@@ -167,6 +192,7 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
           importance: 0.5,
           degree: 0,
           daysOverdue: 0,
+          cluster: -1,
         });
         // 語義の説明は、空でない最初のものを採用する
         if (!root.meaning && ref.relation) root.meaning = ref.relation;
@@ -175,7 +201,9 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
         connect(target, root, "root", root.label);
       }
     }
-  } else if (layer === "synonym") {
+  }
+
+  if (active.has("synonym")) {
     for (const word of words) {
       const self = byId.get(word.id);
       if (!self) continue;
@@ -187,8 +215,9 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
         connect(self, target, "synonym", "");
       }
     }
-  } else {
-    // antonym
+  }
+
+  if (active.has("antonym")) {
     for (const word of words) {
       const self = byId.get(word.id);
       if (!self) continue;
@@ -210,7 +239,99 @@ export function buildGraph(words: SavedWord[], layer: GraphLayer): MapGraph {
     }
   }
 
-  return { nodes, links };
+  const adjacency = buildAdjacency(nodes, links);
+  const clusters = assignClusters(nodes, adjacency);
+
+  return { nodes, links, clusters, adjacency };
+}
+
+/** ノード id → 隣接ノード id。ゴーストも語根も含む素の隣接関係。 */
+function buildAdjacency(nodes: MapNode[], links: MapLink[]): Map<string, Set<string>> {
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of nodes) adjacency.set(node.id, new Set());
+  for (const link of links) {
+    adjacency.get(link.source)?.add(link.target);
+    adjacency.get(link.target)?.add(link.source);
+  }
+  return adjacency;
+}
+
+/**
+ * 連結成分に番号を振る。
+ *
+ * 房ごとに色を変えるのが目的。線の色だけで区別させると、線が交差した
+ * 瞬間にどれが同じ仲間か分からなくなる。
+ */
+function assignClusters(nodes: MapNode[], adjacency: Map<string, Set<string>>): Cluster[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const clusters: Cluster[] = [];
+  let next = 0;
+
+  for (const start of nodes) {
+    if (start.cluster !== -1) continue;
+
+    const id = next++;
+    const members: MapNode[] = [];
+    const stack = [start];
+    start.cluster = id;
+
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      members.push(node);
+      for (const neighborId of adjacency.get(node.id) ?? []) {
+        const neighbor = byId.get(neighborId);
+        if (!neighbor || neighbor.cluster !== -1) continue;
+        neighbor.cluster = id;
+        stack.push(neighbor);
+      }
+    }
+
+    clusters.push({
+      id,
+      words: members.filter((n) => n.kind === "word" && n.data).map((n) => n.data!),
+      roots: members.filter((n) => n.kind === "root").map((n) => n.label),
+      size: members.length,
+    });
+  }
+
+  clusters.sort((a, b) => b.words.length - a.words.length || b.size - a.size);
+  return clusters;
+}
+
+/**
+ * どこともつながっていない語。
+ *
+ * 図の端に点として散っているだけで見落とされるが、実際にはいちばん
+ * 手が届いていない語でもある。一覧にして取り出せるようにする。
+ */
+export function isolatedWords(graph: MapGraph): SavedWord[] {
+  return graph.nodes
+    .filter((n) => n.kind === "word" && n.degree === 0 && (graph.adjacency.get(n.id)?.size ?? 0) === 0)
+    .map((n) => n.data!)
+    .filter(Boolean);
+}
+
+/**
+ * ある節点から n 歩でたどり着ける範囲。焦点表示に使う。
+ */
+export function neighborhood(graph: MapGraph, rootId: string, depth = 2): Set<string> {
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+
+  for (let d = 0; d < depth; d++) {
+    const nextFrontier: string[] = [];
+    for (const id of frontier) {
+      for (const neighborId of graph.adjacency.get(id) ?? []) {
+        if (seen.has(neighborId)) continue;
+        seen.add(neighborId);
+        nextFrontier.push(neighborId);
+      }
+    }
+    frontier = nextFrontier;
+    if (frontier.length === 0) break;
+  }
+
+  return seen;
 }
 
 /** 語根ノードのうち、まだ1語しか押さえていないもの。次に伸ばす余地がある */

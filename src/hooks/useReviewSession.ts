@@ -21,6 +21,8 @@ const STORAGE_KEY = "cortex_dict_review_session";
 /** 中断したセッションを再開できる期間。これを過ぎたら破棄する。 */
 const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_QUEUE = 200;
+/** 1 セッションで学習ステップの語を戻せる上限。終われなくなるのを防ぐ。 */
+const MAX_REQUEUE = 40;
 
 export interface ReviewFilter {
   /** 期限が来ているものだけに絞る */
@@ -28,13 +30,33 @@ export interface ReviewFilter {
   mode?: DictionaryMode;
 }
 
+/**
+ * 出題の形式。
+ *
+ *   flip … カードをめくって自己申告する（再認）
+ *   type … 日本語を見て綴りを打つ（想起）
+ *
+ * 想起のほうが定着に効くが、初見の語にいきなり打たせても手が出ないので、
+ * 「今日のサイクル」は導入を flip、2 周目を type に割り当てている。
+ */
+export type ReviewMode = "flip" | "type";
+
 export interface ReviewSessionState {
-  /** wordId の配列。セッション中は不変。 */
+  /**
+   * wordId の配列。
+   *
+   * 以前は「セッション中は不変」だった。学習ステップ（1分 / 10分）で
+   * 数分後に再出題すべき語が出てきたため、**末尾への追加だけ**を許す。
+   * 既に出した位置より手前は決して書き換えないので、index のずれは起きない。
+   */
   queue: string[];
   index: number;
   results: Record<string, ReviewRating>;
   startedAt: number;
   filter: ReviewFilter;
+  mode: ReviewMode;
+  /** 同じセッション内で再出題した回数。無限に膨らませないための上限管理 */
+  requeued?: number;
 }
 
 function startOfToday(): number {
@@ -102,7 +124,8 @@ function readStored(): ReviewSessionState | null {
     if (!Array.isArray(parsed?.queue) || parsed.queue.length === 0) return null;
     if (Date.now() - (parsed.startedAt ?? 0) > RESUME_WINDOW_MS) return null;
     if (parsed.index >= parsed.queue.length) return null; // 完了済みは再開しない
-    return parsed;
+    // mode を足す前に保存されたセッションには存在しない。既定へ寄せる
+    return { ...parsed, mode: parsed.mode === "type" ? "type" : "flip" };
   } catch {
     return null;
   }
@@ -127,7 +150,12 @@ export interface ReviewSessionApi {
   isFinished: boolean;
   /** 中断中のセッションがあるか（開始前のみ意味を持つ） */
   resumable: ReviewSessionState | null;
-  start: (words: SavedWord[], filter: ReviewFilter) => number;
+  start: (words: SavedWord[], filter: ReviewFilter, mode?: ReviewMode) => number;
+  /** 並び替えずに、渡された順のまま出す（「今日のサイクル」の各段で使う） */
+  startExact: (words: SavedWord[], mode?: ReviewMode) => number;
+  /** 学習ステップの語を同じセッションの末尾へ戻す */
+  requeue: (wordId: string) => void;
+  mode: ReviewMode;
   resume: () => void;
   discardResumable: () => void;
   grade: (rating: ReviewRating) => SavedWord | null;
@@ -187,12 +215,52 @@ export function useReviewSession(words: SavedWord[]): ReviewSessionApi {
   const current = session && !isFinished ? byId.get(session.queue[session.index]) ?? null : null;
 
   const start = useCallback(
-    (source: SavedWord[], filter: ReviewFilter) => {
+    (source: SavedWord[], filter: ReviewFilter, mode: ReviewMode = "flip") => {
       const queue = buildQueue(source, filter);
       if (queue.length === 0) return 0;
-      apply({ queue, index: 0, results: {}, startedAt: Date.now(), filter });
+      apply({ queue, index: 0, results: {}, startedAt: Date.now(), filter, mode });
       setResumable(null);
       return queue.length;
+    },
+    [apply]
+  );
+
+  const startExact = useCallback(
+    (source: SavedWord[], mode: ReviewMode = "flip") => {
+      const queue = source.map((w) => w.id).slice(0, MAX_QUEUE);
+      if (queue.length === 0) return 0;
+      apply({
+        queue,
+        index: 0,
+        results: {},
+        startedAt: Date.now(),
+        filter: { onlyDue: false },
+        mode,
+      });
+      setResumable(null);
+      return queue.length;
+    },
+    [apply]
+  );
+
+  /**
+   * 1 分後・10 分後に再出題すべき語を末尾へ戻す。
+   *
+   * 1 セッションで戻せる回数に上限を置く。AGAIN を押し続けると
+   * キューが伸び続けて終われなくなるため。
+   */
+  const requeue = useCallback(
+    (wordId: string) => {
+      const prev = sessionRef.current;
+      if (!prev) return;
+      if ((prev.requeued ?? 0) >= MAX_REQUEUE) return;
+      // 未出題の分がまだ末尾に残っているなら二重に積まない
+      if (prev.queue.slice(prev.index).includes(wordId)) return;
+      apply({
+        ...prev,
+        queue: [...prev.queue, wordId],
+        requeued: (prev.requeued ?? 0) + 1,
+      });
     },
     [apply]
   );
@@ -243,7 +311,14 @@ export function useReviewSession(words: SavedWord[]): ReviewSessionApi {
     if (!s) return 0;
     const queue = s.queue.filter((id) => s.results[id] === ReviewRating.AGAIN);
     if (queue.length === 0) return 0;
-    apply({ queue: shuffle(queue), index: 0, results: {}, startedAt: Date.now(), filter: s.filter });
+    apply({
+      queue: shuffle(queue),
+      index: 0,
+      results: {},
+      startedAt: Date.now(),
+      filter: s.filter,
+      mode: s.mode,
+    });
     return queue.length;
   }, [apply]);
 
@@ -261,6 +336,9 @@ export function useReviewSession(words: SavedWord[]): ReviewSessionApi {
     isFinished,
     resumable,
     start,
+    startExact,
+    requeue,
+    mode: session?.mode ?? "flip",
     resume,
     discardResumable,
     grade,
