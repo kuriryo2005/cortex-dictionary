@@ -42,7 +42,16 @@ export const MODEL = "gemini-3.6-flash";
  * 構造は主力と同じ）。混雑が明けていれば 3.8-flash も試す。
  * 解説がやや簡素になっても、止まるよりははるかにいい。
  */
-export const FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash"] as const;
+export const FALLBACK_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+] as const;
 
 /**
  * モデルが一時的に使えないことを示すエラーか。
@@ -56,7 +65,15 @@ export function isModelUnavailable(error: unknown): boolean {
     m.includes("overloaded") ||
     m.includes("unavailable") ||
     m.includes("404") ||
-    m.includes("no longer available")
+    m.includes("no longer available") ||
+    // 無料枠の上限はモデルごとに付く（通常 Flash は1日20回、Lite は500回）。
+    // あるモデルを使い切っても別のモデルには枠が残っているので、429 も
+    // 「このモデルは諦めて次へ」の合図として扱う。キーの切り替えは
+    // withKeyFailover が先に済ませているため、ここに届いた429は
+    // 「どのキーでもこのモデルは枠切れ」を意味する。
+    m.includes("429") ||
+    m.includes("resource_exhausted") ||
+    m.includes("quota")
   );
 }
 
@@ -67,8 +84,16 @@ export function isModelUnavailable(error: unknown): boolean {
  * withKeyFailover が内側で面倒を見るので、ここはモデルだけを変える。
  */
 export async function withModelFallback<T>(run: (model: string) => Promise<T>): Promise<T> {
+  // 9モデルを順に試すと、全滅に近いときに何分も待たせてしまう。実測で138秒
+  // かかったことがあるので、全体の締め切りを設けて打ち切る。
+  const deadline = Date.now() + 20_000;
+
   let lastError: unknown;
   for (const model of [MODEL, ...FALLBACK_MODELS]) {
+    if (Date.now() > deadline) {
+      console.warn("[gemini] 締め切りに達したのでモデルの切り替えを打ち切ります");
+      break;
+    }
     try {
       return await run(model);
     } catch (e) {
@@ -190,10 +215,6 @@ function isTransient(message: string): boolean {
   );
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * 生きているキーを順に試して、最初に成功した結果を返す。
  *
@@ -207,13 +228,10 @@ function sleep(ms: number): Promise<void> {
  * 体験が悪いので、混雑での再試行は合計3秒程度までにとどめる。
  */
 export async function withKeyFailover<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
-  const keyAttempts = Math.max(1, Math.min(loadSlots().length, 4));
-  const backoffMs = [400, 900, 1800];
-
+  const keyAttempts = Math.max(1, Math.min(loadSlots().length, 3));
   let lastError: unknown;
-  let transientRetries = 0;
 
-  for (let i = 0; i < keyAttempts; ) {
+  for (let i = 0; i < keyAttempts; i++) {
     const ai = getClient();
     try {
       return await fn(ai);
@@ -221,19 +239,15 @@ export async function withKeyFailover<T>(fn: (ai: GoogleGenAI) => Promise<T>): P
       lastError = e;
       const message = describeError(e);
 
-      if (isTransient(message) && transientRetries < backoffMs.length) {
-        await sleep(backoffMs[transientRetries]);
-        transientRetries++;
-        continue; // キーの試行回数は消費しない
-      }
+      // 混雑（503）はキーを替えても直らない。待つよりモデルを替えるほうが
+      // 速いので、ここでは粘らずに投げ返して withModelFallback に任せる。
+      if (isTransient(message)) throw e;
 
       if (isDepleted(message) || isRateLimited(message)) {
         reportKeyFailure(ai, e);
-        i++;
         continue;
       }
-
-      throw e;
+      throw e; // 入力不正などは粘っても直らない
     }
   }
   throw lastError;
