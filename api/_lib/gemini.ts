@@ -438,8 +438,26 @@ other word. When genuinely uncertain whether a correction is warranted, do NOT
 correct — look up the input exactly as typed. If you do correct it, the "word"
 field in your response must contain the corrected spelling, not the original input.`;
 
+  // 学術モードの差が「たまたま専門語義が混ざる」程度でしか出ていなかった。
+  // 実測すると stress には「応力」が出るのに resolution では分野名が付かず、
+  // 利用者から「一般と学術で同じでは？」と言われた。偶然に頼らず、
+  // 分野の語義を必ず入れて、分野名を明示させる。
+  const fieldRule =
+    mode === "aca"
+      ? `This word may carry a DISTINCT technical meaning in a specific academic
+field (engineering, physics, medicine, statistics, linguistics, economics, ...).
+If it does, you MUST include that sense, and prefix it with the field in
+parentheses, e.g. "(工学) 応力，負荷" / "(統計) 有意な" / "(光学) 分解能".
+Put the technical sense first when the word is most often encountered in papers
+with that meaning. If the word genuinely has no field-specific sense, do not
+invent one.`
+      : `Prefer the meanings a learner meets in everyday text, conversation, and news.
+Do NOT lead with a narrow technical sense.`;
+
   return `Look up the English word "${word}" specifically for ${context}.
 Prioritize meanings in ${context}.
+
+${fieldRule}
 
 ${correctionRule}
 
