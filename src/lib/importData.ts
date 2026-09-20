@@ -12,12 +12,15 @@
 import { collection, doc, writeBatch } from "firebase/firestore";
 import { db } from "../firebase";
 import { fetchRawWords } from "./exportData";
+import { saveWords } from "../services/wordService";
 import { toModeSlug, toWordLower } from "./normalize";
 
 export type ConflictStrategy = "skip" | "overwrite" | "duplicate";
 
 export const MAX_IMPORT_WORDS = 5000;
 const BATCH_SIZE = 400;
+/** /api/save-words が1回で受け付ける上限に合わせる。 */
+const SAVE_CHUNK = 100;
 
 /** セキュリティルール（isValidWord）が課している上限。 */
 const LIMITS = {
@@ -294,13 +297,13 @@ export async function applyImport(
   let done = 0;
 
   // --- 新規作成 ---
-  for (let i = 0; i < creates.length; i += BATCH_SIZE) {
-    const chunk = creates.slice(i, i + BATCH_SIZE);
-    const batch = writeBatch(db);
-    for (const data of chunk) {
-      batch.set(doc(collection(db, "words")), data);
-    }
-    await batch.commit();
+  //
+  // 保存はサーバー経由。クライアントから `words` に直接書けないようにしてある
+  // （無料プランの上限をセキュリティルールでは強制できないため）。復元自体も
+  // Pro 限定で、サーバー側が弾く。
+  for (let i = 0; i < creates.length; i += SAVE_CHUNK) {
+    const chunk = creates.slice(i, i + SAVE_CHUNK);
+    await saveWords(chunk as Record<string, unknown>[], "restore");
     result.created += chunk.length;
     done += chunk.length;
     onProgress?.(done, total);

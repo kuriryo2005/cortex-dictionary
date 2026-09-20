@@ -67,9 +67,21 @@ export const PLAN_QUOTA: Record<PlanId, Record<QuotaBucket, QuotaLimit>> = {
   },
 };
 
-/** プランごとの保存語数の上限。null は無制限。 */
+/**
+ * プランごとの保存語数の上限。null は無制限。
+ *
+ * 無料は30語。削除すれば枠は戻る（入れ替えは自由）。
+ *
+ * この数字は「語彙マップが面白くなり始めるのが20〜40語」というところから
+ * 決めている。30語まで貯めるとマップにつながりが見え始め、そこで上限に当たる。
+ * 一番続きが欲しくなった瞬間に Pro の話が出るようにしたい。
+ *
+ * ⚠️ この制限は `api/save-words.ts` 経由でしか強制できない。Firestore の
+ * セキュリティルールにはコレクションの件数を数える機能が無いため、
+ * クライアントから直接 `words` に書ける状態に戻してはいけない。
+ */
 export const PLAN_WORD_LIMIT: Record<PlanId, number | null> = {
-  free: 200,
+  free: 30,
   pro: null,
 };
 

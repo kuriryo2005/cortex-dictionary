@@ -29,6 +29,7 @@ import { format } from "date-fns";
 import { ja } from "date-fns/locale";
 import { lookupWord, planNextReview, getCachedWord, fetchPhonetic, ApiError } from "./services/geminiService";
 import { usePlan } from "./hooks/usePlan";
+import { saveWords, SaveLimitError } from "./services/wordService";
 import { useUsage } from "./hooks/useUsage";
 import { UpgradeModal } from "./components/UpgradeModal";
 import { LandingPage } from "./components/LandingPage";
@@ -571,9 +572,25 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
         wordLower: result.word.trim().toLowerCase(),
         updatedAt: now,
       };
-      await addDoc(collection(db, "words"), wordData);
-      toast.success(`${result.word} をリストに追加しました！`);
+      // 保存はサーバー経由。無料プランの上限はここでしか強制できない
+      const { saved, limit } = await saveWords([wordData], "search");
+      if (limit !== null && saved !== null) {
+        const left = Math.max(0, limit - saved);
+        toast.success(
+          left === 0
+            ? `${result.word} を追加しました（無料プランの上限 ${limit} 語に達しました）`
+            : `${result.word} を追加しました（あと ${left} 語）`
+        );
+      } else {
+        toast.success(`${result.word} をリストに追加しました！`);
+      }
     } catch (error) {
+      // 上限に当たったときは、エラーを流すよりアップグレード画面を出すほうが伝わる
+      if (error instanceof SaveLimitError) {
+        if (error.upgradable) openUpgrade(error.message);
+        else toast.error(error.message);
+        return;
+      }
       handleFirestoreError(error, OperationType.CREATE, "words");
     }
   };

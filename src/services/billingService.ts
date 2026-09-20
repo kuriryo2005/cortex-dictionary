@@ -36,7 +36,7 @@ export const FREE_STATUS: PlanStatus = {
     story: { day: 3, week: 10, month: 20 },
     review: { day: 20, week: 80, month: 300 },
   },
-  wordLimit: 200,
+  wordLimit: 30,
   billingEnabled: false,
 };
 

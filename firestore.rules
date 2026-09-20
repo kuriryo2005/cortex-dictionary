@@ -76,10 +76,16 @@ service cloud.firestore {
     match /words/{wordId} {
       allow read: if isSignedIn() && existing().userId == request.auth.uid;
       
-      allow create: if isSignedIn() && 
-                      isValidId(wordId) && 
-                      isValidWord(incoming()) &&
-                      incoming().keys().hasAll(['word', 'meaning', 'userId', 'timestamp']);
+      // 作成はサーバー（api/save-words.ts）のサービスアカウントだけが行う。
+      //
+      // 無料プランの「保存は30語まで」を守らせるには件数を数える必要があるが、
+      // セキュリティルールにはコレクションの件数を数える機能が無い。クライアントが
+      // 直接 addDoc できる状態では、何語でも保存できてしまい制限が成立しない。
+      // ここを緩めると無料プランの上限が無効になるので変更しないこと。
+      //
+      // 読み取り・更新・削除は引き続き本人が直接行う（onSnapshot の購読と、
+      // 削除して枠を空ける操作のため）。
+      allow create: if false;
       
       allow update: if isSignedIn() && 
                       existing().userId == request.auth.uid &&

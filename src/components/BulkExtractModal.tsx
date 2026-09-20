@@ -9,12 +9,11 @@
 import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Loader2, X, ClipboardPaste, Check } from "lucide-react";
-import { writeBatch, doc, collection } from "firebase/firestore";
-import { db } from "../firebase";
 import { Input } from "./ui/input";
 import { toast } from "sonner";
 import { DictionaryMode, Deck, ExtractedCandidate, SavedWord } from "../types";
 import { extractCandidates } from "../services/geminiService";
+import { saveWords, SaveLimitError } from "../services/wordService";
 import { dedupeTags } from "../lib/filter";
 import { toWordLower } from "../lib/normalize";
 
@@ -124,12 +123,13 @@ export const BulkExtractModal: React.FC<Props> = ({ open, onClose, uid, words, d
       const tags = dedupeTags(tagInput.split(",").map((t) => t.trim()).filter(Boolean));
       const now = Date.now();
       const excerpt = text.trim().slice(0, 200);
-      const batch = writeBatch(db);
+      // 保存はサーバー経由（無料プランの上限を強制するため）
+      const rows: Record<string, unknown>[] = [];
 
       for (const c of picked) {
         // 空文字にできるのは grammar 以下だけ。meaning が空だと
         // セキュリティルールの isValidWord を通らない。
-        batch.set(doc(collection(db, "words")), {
+        rows.push({
           word: c.word,
           wordLower: toWordLower(c.word),
           meaning: c.meaningShort,
@@ -156,13 +156,14 @@ export const BulkExtractModal: React.FC<Props> = ({ open, onClose, uid, words, d
         });
       }
 
-      await batch.commit();
+      await saveWords(rows, "extract");
       toast.success(`${picked.length} 語を保存しました。詳細は順次生成されます。`);
       reset();
       onClose();
     } catch (e) {
       console.error(e);
-      toast.error("保存に失敗しました。");
+      // 上限や Pro 限定は理由が分かるメッセージが来るので、そのまま見せる
+      toast.error(e instanceof SaveLimitError ? e.message : "保存に失敗しました。");
     } finally {
       setBusy(false);
     }

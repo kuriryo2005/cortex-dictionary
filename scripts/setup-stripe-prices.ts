@@ -21,7 +21,7 @@ if (!KEY) {
 
 const PRODUCT_NAME = "Cortex Dictionary Pro";
 const PRODUCT_DESCRIPTION =
-  "収録済みの単語は引き放題。AIが新しく解説を作る単語が1日100語まで。保存無制限・ナレッジマップ全開放・英文から一括抽出・発音・統計・Ankiエクスポート。";
+  "保存が無制限になります（無料プランは30語まで）。収録済みの単語は引き放題、AIが新しく解説を作る単語が1日100語まで。ナレッジマップ全開放・英文から一括抽出・バックアップからの復元・発音・統計・Ankiエクスポート。";
 const MONTHLY_JPY = 600;
 const YEARLY_JPY = 4800;
 
