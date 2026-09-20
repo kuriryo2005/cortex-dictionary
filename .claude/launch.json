@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "cortex-dictionary-alt",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port=3100", "--strictPort"],
+      "port": 3100
     }
   ]
 }

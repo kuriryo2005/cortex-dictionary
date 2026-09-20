@@ -1,0 +1,21 @@
+/* 規約類の共通スタイル。アプリ本体と同じく、囲みではなく罫線と余白で区切る。 */
+:root { color-scheme: light; }
+body {
+  margin: 0;
+  background: #fff;
+  color: #1A1C1E;
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  line-height: 1.9;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 64px 24px 96px; }
+h1 { font-size: 26px; font-weight: 900; margin: 0 0 8px; letter-spacing: -0.01em; }
+.updated { color: #8A9199; font-size: 12px; margin: 0 0 40px; }
+h2 { font-size: 16px; font-weight: 900; margin: 40px 0 8px; }
+p, li { font-size: 14px; }
+ul, ol { padding-left: 1.2em; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-top: 1px solid #EDEFF1; padding: 12px 8px; text-align: left; vertical-align: top; }
+th { width: 34%; font-weight: 700; color: #656E77; white-space: nowrap; }
+.todo { background: #FFF4E5; color: #8A4B00; padding: 2px 6px; font-size: 13px; }
+footer { margin-top: 64px; border-top: 1px solid #EDEFF1; padding-top: 20px; font-size: 11px; color: #8A9199; }
+footer a { color: #8A9199; margin-right: 16px; }

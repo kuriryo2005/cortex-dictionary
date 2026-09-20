@@ -13,6 +13,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   BrainCircuit,
   Map as MapIcon,
   Download,
@@ -20,11 +21,17 @@ import {
   ClipboardPaste,
   Home,
   Tag as TagIcon,
+  Sparkles,
+  HelpCircle,
   X
 } from "lucide-react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale";
-import { lookupWord, planNextReview, getCachedWord, fetchPhonetic } from "./services/geminiService";
+import { lookupWord, planNextReview, getCachedWord, fetchPhonetic, ApiError } from "./services/geminiService";
+import { usePlan } from "./hooks/usePlan";
+import { useUsage } from "./hooks/useUsage";
+import { UpgradeModal } from "./components/UpgradeModal";
+import { LandingPage } from "./components/LandingPage";
 import {
   TARGET_SCHEMA_VERSION,
   coerceWordDetail,
@@ -37,6 +44,8 @@ import { useDecks } from "./hooks/useDecks";
 import { useEnrichQueue } from "./hooks/useEnrichQueue";
 import { applyFilter, collectTags, dedupeTags, isFilterActive, loadFilter, saveFilter } from "./lib/filter";
 import { nextStreak } from "./lib/stats";
+import { isLeech, schedule } from "./lib/srs";
+import { computeCycle, type StageKey } from "./lib/cycle";
 import {
   formatPhonetic,
   isTtsAvailable,
@@ -50,8 +59,10 @@ import { Wordbook } from "./components/Wordbook";
 import { DataTransferModal } from "./components/DataTransferModal";
 import { ReviewMode } from "./components/ReviewMode";
 import { Dashboard } from "./components/Dashboard";
+import { FirstRun } from "./components/FirstRun";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
+import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
 import { Skeleton } from "./components/ui/skeleton";
@@ -157,6 +168,10 @@ export default function App() {
   const [filter, setFilter] = useState<WordFilter>(loadFilter);
   const [userStats, setUserStats] = useState<UserStats | null>(null);
   const [tagDraft, setTagDraft] = useState("");
+  /** 絞り込みを開いているか。既定は畳む（単語一覧の高さを優先する） */
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  /** 初回のスタートアップガイド。スキップ・完了のどちらでも二度と自動では出さない */
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   const decks = useDecks(user?.uid ?? null);
 
@@ -166,6 +181,8 @@ export default function App() {
   const allTags = collectTags(savedWords);
 
   const review = useReviewSession(savedWords);
+  // 「今日のサイクル」。絞り込みを効かせた集合から計算する（一覧・復習とズレないように）
+  const cycle = useMemo(() => computeCycle(filteredWords), [filteredWords]);
   const enriching = useEnrichQueue(savedWords, !!user);
 
   // 表示中の単語が既にリストにある（＝保存済みドキュメントを開いている、
@@ -190,6 +207,43 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  /**
+   * 初回ログイン時に一度だけガイドを出す。
+   *
+   * ランディングページの裏で開いてしまわないよう、user が入ってから判定する。
+   * 既読の判定は localStorage なので、消せばまた出る（出し直したい人向け）。
+   */
+  useEffect(() => {
+    if (!user) return;
+    if (hasSeenGuide()) return;
+    setIsGuideOpen(true);
+  }, [user]);
+
+  // 課金プラン。取得に失敗しても free として動くので UI は壊れない。
+  const { status: planStatus, isPro, refresh: refreshPlan } = usePlan(user);
+  // 無料プランの「今日あと何語」。上限に対する納得感と Pro 検討のきっかけになる。
+  const { usage, refresh: refreshUsage } = useUsage(user, planStatus);
+  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
+
+  /** 上限に当たったときなど、理由つきでアップグレード画面を開く。 */
+  const openUpgrade = (reason?: string) => {
+    setUpgradeReason(reason);
+    setIsUpgradeOpen(true);
+  };
+
+  /**
+   * 英文からの一括抽出は Pro 限定。サーバー側でも弾いているが、押してから
+   * エラーを見せるより、押した瞬間に案内を出すほうが伝わる。
+   */
+  const openExtract = () => {
+    if (!isPro) {
+      openUpgrade("英文からの一括抽出は Pro プランの機能です。");
+      return;
+    }
+    setIsExtractOpen(true);
+  };
 
   /**
    * 単語一覧の購読（実装仕様書 F2-b）。
@@ -315,22 +369,41 @@ export default function App() {
 
     touchStreak();
 
-    const session: ReviewSession = { rating, timestamp: Date.now() };
+    const now = Date.now();
+    const session: ReviewSession = { rating, timestamp: now };
     const updatedHistory = [...(word.reviewHistory || []), session];
 
-    (async () => {
-      try {
-        const { nextReviewAt, aiAnalysis } = await planNextReview({ ...word, reviewHistory: updatedHistory });
-        await updateDoc(doc(db, "words", word.id), {
-          reviewHistory: updatedHistory,
-          nextReviewAt,
-          aiAnalysis,
-          updatedAt: Date.now(),
-        });
-      } catch (error) {
-        console.error("Background review processing failed:", error);
-      }
-    })();
+    // 次回日時はローカルで決める（src/lib/srs.ts）。
+    // 以前は毎回 /api/review-analysis を待っていたため、評価のたびに課金と
+    // 数秒の遅延が発生し、通信に失敗すると nextReviewAt が更新されないまま
+    // その語が永久に期限超過へ残っていた。計算は同期で、失敗しない。
+    const plan = schedule(word.reviewHistory, rating, now);
+
+    // 学習ステップ（1分 / 10分）の語は、その日のうちにもう一度出す。
+    // 翌日まで待たずに詰めて触るのが、初回の定着にいちばん効く。
+    if (plan.requeueInSession) review.requeue(word.id);
+
+    updateDoc(doc(db, "words", word.id), {
+      reviewHistory: updatedHistory,
+      nextReviewAt: plan.nextReviewAt,
+      updatedAt: now,
+    }).catch((error) => console.error("復習結果の保存に失敗しました:", error));
+
+    // AI の出番は日付決めから外し、「何度やっても抜けない語」の原因分析だけに絞る。
+    // 全評価で呼んでいた頃と比べて呼び出し回数が二桁減る。
+    const graded = { ...word, reviewHistory: updatedHistory };
+    if (isLeech(graded) && !word.aiAnalysis) {
+      (async () => {
+        try {
+          const { aiAnalysis } = await planNextReview(graded);
+          if (aiAnalysis) {
+            await updateDoc(doc(db, "words", word.id), { aiAnalysis, updatedAt: Date.now() });
+          }
+        } catch (error) {
+          console.debug("苦手分析の生成をスキップしました:", error);
+        }
+      })();
+    }
   };
 
 const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
@@ -383,11 +456,18 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : "単語の検索に失敗しました。";
-      toast.error(message);
+      // 無料プランの上限に当たった場合は、トーストで流さずアップグレード画面を出す
+      if (error instanceof ApiError && error.status === 429 && !isPro) {
+        openUpgrade(message);
+      } else {
+        toast.error(message);
+      }
       setResult(null);
     } finally {
       setLoading(false);
       setIsStreaming(false);
+      // 上限カウンタはサーバーが進めるので、検索後に読み直す
+      void refreshUsage();
     }
   };
   // Debounced search suggestions
@@ -516,6 +596,30 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     setIsSidebarOpen(false);
   };
 
+  /**
+   * 「今日のサイクル」の段を開始する（src/lib/cycle.ts）。
+   *
+   * 並びはサイクル側が決めた順のまま出す（startExact）。ここでシャッフルし直すと
+   * 「導入 → 想起」で同じ語を続けて見せる狙いが崩れる。
+   */
+  const startStage = (key: StageKey) => {
+    const stage = cycle.stages.find((s) => s.key === key);
+    if (!stage || stage.words.length === 0) return;
+
+    // 定着の段だけは、今日の語と古い語を混ぜて出す（インターリービング）。
+    // 同じ日に入れた語だけを並べると、前後の文脈で思い出せてしまう。
+    const pool =
+      key === "mix"
+        ? [...stage.words, ...cycle.stages[1].words].filter(
+            (w, i, list) => list.findIndex((o) => o.id === w.id) === i
+          )
+        : stage.words;
+
+    review.startExact(pool, key === "recall" ? "type" : "flip");
+    setActiveTab("flashcards");
+    setIsSidebarOpen(false);
+  };
+
   const exitFlashcards = () => {
     review.end();
     setActiveTab("home");
@@ -574,32 +678,13 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
 
   // 未ログインではアプリ本体を描画しない。
   // 検索は AI 生成を伴うため、認証なしに叩ける経路を残さない（実装仕様書 F1）。
+  // 代わりに、何ができるアプリなのかを伝えるランディングページを出す。
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white p-6">
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-sm"
-        >
-          <h1 className="text-3xl font-black tracking-tight text-[#1A1C1E] mb-3">
-            Cortex Dictionary
-          </h1>
-          <p className="text-sm text-[#656E77] leading-relaxed mb-10">
-            英単語の意味、語源、例文を調べて保存し、間隔を空けて復習するための辞書です。
-          </p>
-
-          <button type="button" onClick={handleLogin} className="btn-primary w-full">
-            <LogIn className="w-4 h-4" />
-            Google でログイン
-          </button>
-
-          <p className="text-[11px] text-[#8A9199] mt-8 leading-relaxed">
-            保存した単語はアカウントごとに管理され、他のユーザーからは見えません。
-          </p>
-        </motion.div>
+      <>
+        <LandingPage onLogin={handleLogin} />
         <Toaster position="bottom-right" richColors />
-      </div>
+      </>
     );
   }
 
@@ -637,8 +722,9 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
         print:hidden
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
-        <div className="p-6 border-b border-[#EAECEF]">
-          <div className="flex items-center justify-between gap-3 mb-7">
+        {/* 上段。常に出す。ここに置くものを増やすと一覧の高さがそのまま削れる */}
+        <div className="px-6 pt-6 pb-4 shrink-0">
+          <div className="flex items-center justify-between gap-3 mb-4">
             <h1 className="text-base font-black tracking-tight">Cortex Dictionary</h1>
             <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setIsSidebarOpen(false)}>
               <ChevronLeft className="w-5 h-5" />
@@ -651,7 +737,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => searchQuery.length > 1 && setShowSuggestions(true)}
-              className="field h-10 text-sm mb-5"
+              className="field h-10 text-sm"
             />
             {loading && (
               <div className="absolute right-0 top-2.5">
@@ -685,8 +771,8 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             </AnimatePresence>
           </form>
 
-          {/* 検索モード。切替の状態は下線で示す */}
-          <div className="flex gap-5 mb-6">
+          {/* 検索モード。検索欄のすぐ下に小さく置く（一覧の高さを食わない） */}
+          <div className="flex gap-4 mt-2">
             {[
               { mode: DictionaryMode.GENERAL, label: "一般" },
               { mode: DictionaryMode.ACADEMIC, label: "学術" },
@@ -695,7 +781,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                 key={label}
                 type="button"
                 onClick={() => setDictionaryMode(mode)}
-                className={`text-xs font-bold pb-1 border-b-2 transition-colors ${
+                className={`text-[11px] font-bold pb-0.5 border-b transition-colors ${
                   dictionaryMode === mode
                     ? "text-[#1A1C1E] border-[#1A1C1E]"
                     : "text-[#8A9199] border-transparent hover:text-[#1A1C1E]"
@@ -705,163 +791,168 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
               </button>
             ))}
           </div>
+        </div>
 
-          {/* デッキとタグの絞り込み（F7）。一覧・復習・マップに同時に効く。 */}
-          <div className="flex gap-1.5 mb-2">
-            <select
-              value={filter.deckId === undefined ? "__all" : filter.deckId ?? "__none"}
-              onChange={(e) => {
-                const v = e.target.value;
-                setFilter((f) => ({
-                  ...f,
-                  deckId: v === "__all" ? undefined : v === "__none" ? null : v,
-                }));
-                setVisibleCount(SIDEBAR_PAGE_SIZE);
-              }}
-              className="flex-1 h-8 bg-transparent border-0 border-b border-[#E5E7EB] rounded-none text-[11px] font-bold text-[#1A1C1E] focus:outline-none"
-            >
-              <option value="__all">すべてのデッキ</option>
-              <option value="__none">未分類</option>
-              {decks.decks.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+        {/*
+          ナビゲーション。
+          以前は高さ 36px のボタンを 5 行に積んでいて、それだけで 180px あった。
+          サイドバーの上半分が操作系で埋まり、肝心の単語一覧が数行しか見えない
+          原因になっていたので、2 列に詰めて 3 行に収める。
+        */}
+        <nav className="px-6 pb-3 shrink-0 grid grid-cols-2 gap-x-3">
+          {[
+            { key: "wordbook", icon: BookOpen, label: "単語帳", onClick: () => setActiveTab("wordbook") },
+            { key: "home", icon: Home, label: "今日の学習", onClick: () => setActiveTab("home") },
+            { key: "flashcards", icon: BrainCircuit, label: "単語カード", onClick: () => startFlashcards() },
+            { key: "map", icon: MapIcon, label: "つながり", onClick: () => setActiveTab("map") },
+            { key: "extract", icon: ClipboardPaste, label: "英文から追加", onClick: openExtract },
+          ].map(({ key, icon: Icon, label, onClick }) => (
             <button
+              key={key}
               type="button"
-              onClick={() => setIsDeckManagerOpen(true)}
-              title="デッキを管理"
-              className="h-8 shrink-0 text-[11px] font-bold text-[#8A9199] hover:text-[#2A5CFF] transition-colors"
-            >
-              管理
-            </button>
-          </div>
-
-          {allTags.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1.5 mb-2">
-              {allTags.slice(0, 12).map(({ tag, count }) => {
-                const active = filter.tags.some((t) => t.toLowerCase() === tag.toLowerCase());
-                return (
-                  <button
-                    key={tag}
-                    type="button"
-                    onClick={() =>
-                      setFilter((f) => ({
-                        ...f,
-                        tags: active
-                          ? f.tags.filter((t) => t.toLowerCase() !== tag.toLowerCase())
-                          : [...f.tags, tag],
-                      }))
-                    }
-                    className={`text-[11px] font-bold transition-colors ${
-                      active
-                        ? "text-[#2A5CFF] underline underline-offset-4"
-                        : "text-[#8A9199] hover:text-[#1A1C1E]"
-                    }`}
-                  >
-                    {tag} <span className="opacity-50">{count}</span>
-                  </button>
-                );
-              })}
-              {isFilterActive(filter) && (
-                <button
-                  type="button"
-                  onClick={() => setFilter({ tags: [] })}
-                  className="text-[11px] font-bold text-[#8A9199] hover:text-red-500 flex items-center gap-1"
-                >
-                  <X className="w-3 h-3" />
-                  解除
-                </button>
-              )}
-            </div>
-          )}
-
-          <nav className="mt-5 space-y-0.5">
-            <button
-              type="button"
-              onClick={() => setActiveTab("wordbook")}
-              className={`w-full flex items-center gap-2.5 h-9 text-xs font-bold transition-colors ${
-                activeTab === "wordbook" ? "text-[#2A5CFF]" : "text-[#656E77] hover:text-[#1A1C1E]"
+              onClick={onClick}
+              className={`flex items-center gap-2 h-8 text-[11px] font-bold transition-colors ${
+                activeTab === key ? "text-[#2A5CFF]" : "text-[#656E77] hover:text-[#1A1C1E]"
               }`}
             >
-              <BookOpen className="w-4 h-4" />
-              単語帳
+              <Icon className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{label}</span>
             </button>
+          ))}
+        </nav>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab("home")}
-              className={`w-full flex items-center gap-2.5 h-9 text-xs font-bold transition-colors ${
-                activeTab === "home" ? "text-[#2A5CFF]" : "text-[#656E77] hover:text-[#1A1C1E]"
-              }`}
-            >
-              <Home className="w-4 h-4" />
-              今日の学習
-            </button>
+        {/*
+          絞り込み。既定では畳んでおく。
+          デッキの select とタグの一覧を常に出していると、タグが増えるほど
+          一覧の高さが削られていった。効いているかどうかは見出しの点で示す。
+        */}
+        <div className="px-6 pb-3 shrink-0 border-b border-[#EAECEF]">
+          <button
+            type="button"
+            onClick={() => setIsFilterOpen((v) => !v)}
+            className="w-full flex items-center justify-between h-7 text-[11px] font-bold text-[#8A9199] hover:text-[#1A1C1E] transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              絞り込み
+              {isFilterActive(filter) && <span className="w-1.5 h-1.5 rounded-full bg-[#2A5CFF]" />}
+            </span>
+            <ChevronDown
+              className={`w-3.5 h-3.5 transition-transform ${isFilterOpen ? "rotate-180" : ""}`}
+            />
+          </button>
 
-            <button
-              type="button"
-              onClick={() => startFlashcards()}
-              className="w-full flex items-center gap-2.5 h-9 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
-            >
-              <BrainCircuit className="w-4 h-4" />
-              単語カードで復習
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab("map")}
-              className={`w-full flex items-center gap-2.5 h-9 text-xs font-bold transition-colors ${
-                activeTab === "map" ? "text-[#2A5CFF]" : "text-[#656E77] hover:text-[#1A1C1E]"
-              }`}
-            >
-              <MapIcon className="w-4 h-4" />
-              単語のつながり
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsExtractOpen(true)}
-              className="w-full flex items-center gap-2.5 h-9 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
-            >
-              <ClipboardPaste className="w-4 h-4" />
-              英文から単語を追加
-            </button>
-          </nav>
-
-          {/* 中断したセッションの再開（実装仕様書 F3）。リロードやタブ移動で
-              進行が失われないように localStorage から復元する。 */}
-          {!review.session && review.resumable && (
-            <div className="mt-5 pt-4 border-t border-[#EAECEF]">
-              <p className="text-[11px] text-[#656E77] leading-snug mb-3">
-                中断した復習が残っています（{review.resumable.index} / {review.resumable.queue.length} 枚）
-              </p>
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    review.resume();
-                    setActiveTab("flashcards");
+          {isFilterOpen && (
+            <div className="pt-2">
+              <div className="flex gap-1.5 mb-2">
+                <select
+                  value={filter.deckId === undefined ? "__all" : filter.deckId ?? "__none"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFilter((f) => ({
+                      ...f,
+                      deckId: v === "__all" ? undefined : v === "__none" ? null : v,
+                    }));
+                    setVisibleCount(SIDEBAR_PAGE_SIZE);
                   }}
-                  className="text-[11px] font-bold text-[#2A5CFF] border-b border-[#2A5CFF]"
+                  className="flex-1 h-8 bg-transparent border-0 border-b border-[#E5E7EB] rounded-none text-[11px] font-bold text-[#1A1C1E] focus:outline-none"
                 >
-                  再開する
-                </button>
+                  <option value="__all">すべてのデッキ</option>
+                  <option value="__none">未分類</option>
+                  {decks.decks.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
-                  onClick={review.discardResumable}
-                  className="text-[11px] font-bold text-[#8A9199] hover:text-red-500"
+                  onClick={() => setIsDeckManagerOpen(true)}
+                  title="デッキを管理"
+                  className="h-8 shrink-0 text-[11px] font-bold text-[#8A9199] hover:text-[#2A5CFF] transition-colors"
                 >
-                  破棄
+                  管理
                 </button>
               </div>
+
+              {allTags.length > 0 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1.5 max-h-24 overflow-y-auto">
+                  {allTags.slice(0, 12).map(({ tag, count }) => {
+                    const active = filter.tags.some((t) => t.toLowerCase() === tag.toLowerCase());
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() =>
+                          setFilter((f) => ({
+                            ...f,
+                            tags: active
+                              ? f.tags.filter((t) => t.toLowerCase() !== tag.toLowerCase())
+                              : [...f.tags, tag],
+                          }))
+                        }
+                        className={`text-[11px] font-bold transition-colors ${
+                          active
+                            ? "text-[#2A5CFF] underline underline-offset-4"
+                            : "text-[#8A9199] hover:text-[#1A1C1E]"
+                        }`}
+                      >
+                        {tag} <span className="opacity-50">{count}</span>
+                      </button>
+                    );
+                  })}
+                  {isFilterActive(filter) && (
+                    <button
+                      type="button"
+                      onClick={() => setFilter({ tags: [] })}
+                      className="text-[11px] font-bold text-[#8A9199] hover:text-red-500 flex items-center gap-1"
+                    >
+                      <X className="w-3 h-3" />
+                      解除
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <ScrollArea className="flex-1 min-h-0">
-          <div className="p-6 pt-2">
+        {/* 中断したセッションの再開（実装仕様書 F3）。リロードやタブ移動で
+            進行が失われないように localStorage から復元する。 */}
+        {!review.session && review.resumable && (
+          <div className="px-6 py-3 shrink-0 border-b border-[#EAECEF] flex items-center justify-between gap-3">
+            <p className="text-[11px] text-[#656E77] leading-snug min-w-0">
+              中断した復習 {review.resumable.index} / {review.resumable.queue.length} 枚
+            </p>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  review.resume();
+                  setActiveTab("flashcards");
+                }}
+                className="text-[11px] font-bold text-[#2A5CFF] border-b border-[#2A5CFF]"
+              >
+                再開
+              </button>
+              <button
+                type="button"
+                onClick={review.discardResumable}
+                className="text-[11px] font-bold text-[#8A9199] hover:text-red-500"
+              >
+                破棄
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/*
+          単語一覧。
+          min-h を置いているのは、上の操作系が縦に伸びたときに flex-1 が
+          ゼロ近くまで潰れて、記録した単語が 1〜2 行しか見えなくなるのを
+          防ぐため。潰れる代わりにサイドバー側がスクロールする。
+        */}
+        <ScrollArea className="flex-1 min-h-[35vh]">
+          <div className="px-6 pb-6 pt-3">
             {!user ? (
               <div className="py-10">
                 <p className="text-xs text-[#656E77] mb-4">保存するにはログインが必要です</p>
@@ -878,10 +969,14 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                 </p>
               </div>
             ) : (
-              <div className="space-y-8">
+              <div>
+                <p className="text-[10px] font-bold text-[#8A9199] mb-3 tabular-nums">
+                  {filteredWords.length} 語
+                </p>
                 {sortedDates.map(date => (
-                  <div key={date}>
-                    <h3 className="text-[10px] font-bold text-[#8A9199] uppercase tracking-[0.12em] mb-3">
+                  <div key={date} className="mb-7 last:mb-0">
+                    {/* 日付は貼り付けておく。長い一覧でも、いまどの日を見ているか分かる */}
+                    <h3 className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm -mx-6 px-6 py-1.5 text-[10px] font-bold text-[#8A9199] uppercase tracking-[0.12em] mb-2">
                       {date}
                     </h3>
                     <div>
@@ -933,7 +1028,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                   <button
                     type="button"
                     onClick={() => setVisibleCount((n) => n + SIDEBAR_PAGE_SIZE)}
-                    className="text-xs font-bold text-[#2A5CFF] border-b border-[#2A5CFF]"
+                    className="mt-6 text-xs font-bold text-[#2A5CFF] border-b border-[#2A5CFF]"
                   >
                     さらに表示（残り {filteredWords.length - visibleWords.length} 件）
                   </button>
@@ -956,11 +1051,49 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             )}
             <button
               type="button"
+              onClick={() => openUpgrade()}
+              className={`flex items-start gap-2.5 text-left text-xs font-bold transition-colors ${
+                isPro ? "text-[#656E77] hover:text-[#1A1C1E]" : "text-[#2A5CFF] hover:text-[#1A3FCC]"
+              }`}
+            >
+              <Sparkles className="w-4 h-4 shrink-0 mt-px" />
+              {isPro ? (
+                <span>Pro プラン（契約中）</span>
+              ) : (
+                <span>
+                  Pro にアップグレード
+                  <span
+                    className={`block font-normal mt-0.5 ${
+                      usage.remaining === 0
+                        ? "text-red-500"
+                        : usage.remaining <= 3
+                          ? "text-[#EA580C]"
+                          : "text-[#8A9199]"
+                    }`}
+                  >
+                    {usage.remaining === 0
+                      ? "今日の新出単語はあと0語"
+                      : `今日の新出単語はあと ${usage.remaining} 語`}
+                  </span>
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setIsDataModalOpen(true)}
               className="flex items-center gap-2.5 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
             >
               <Download className="w-4 h-4" />
               データの書き出し / 復元
+            </button>
+            {/* ガイドはスキップできる代わりに、いつでもここから開き直せる */}
+            <button
+              type="button"
+              onClick={() => setIsGuideOpen(true)}
+              className="flex items-center gap-2.5 text-xs font-bold text-[#656E77] hover:text-[#1A1C1E] transition-colors"
+            >
+              <HelpCircle className="w-4 h-4" />
+              使い方
             </button>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -983,15 +1116,32 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
       {/* Main Content */}
       <main className="flex-1 h-full overflow-y-auto bg-white p-6 md:p-10 lg:p-16 print:h-auto print:overflow-visible print:p-0">
         <AnimatePresence mode="wait">
-          {activeTab === "home" ? (
+          {activeTab === "home" && savedWords.length === 0 ? (
+            // 保存が1語も無い人にはダッシュボードではなく最初の一歩を出す。
+            // 空の数値を並べても何をすればいいか伝わらない。
+            <motion.div key="firstrun" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <FirstRun
+                onPick={(word) => {
+                  setSearchQuery(word);
+                  void handleSearch(undefined, word);
+                }}
+              />
+            </motion.div>
+          ) : activeTab === "home" ? (
             <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <Dashboard
                 words={filteredWords}
                 decks={decks.decks}
                 stats={userStats}
                 enriching={enriching}
+                cycle={cycle}
                 onStartReview={startFlashcards}
-                onOpenExtract={() => setIsExtractOpen(true)}
+                onStartStage={startStage}
+                onWordClick={(w) => {
+                  setResult(w);
+                  setActiveTab("detail");
+                }}
+                onOpenExtract={openExtract}
                 onSelectDeck={(deckId) => {
                   setFilter((f) => ({ ...f, deckId }));
                   setVisibleCount(SIDEBAR_PAGE_SIZE);
@@ -1016,6 +1166,14 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                    setSearchQuery(word);
                    handleSearch(undefined, word);
                    setActiveTab("detail");
+                 }}
+                 onReviewWords={(list) => {
+                   // 房や孤立語をそのまま出す。並び替えないのは、
+                   // 意味の近い語を続けて見せて弁別させるため
+                   if (review.startExact(list) > 0) {
+                     setActiveTab("flashcards");
+                     setIsSidebarOpen(false);
+                   }
                  }}
                  onStoryGenerated={async (wordId, story) => {
                    try {
@@ -1319,6 +1477,17 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             api={decks}
             words={savedWords}
           />
+          <UpgradeModal
+            open={isUpgradeOpen}
+            onClose={() => {
+              setIsUpgradeOpen(false);
+              setUpgradeReason(undefined);
+              void refreshPlan();
+            }}
+            status={planStatus}
+            reason={upgradeReason}
+          />
+          <StartupGuide open={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
           <BulkExtractModal
             open={isExtractOpen}
             onClose={() => setIsExtractOpen(false)}

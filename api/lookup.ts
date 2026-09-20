@@ -10,9 +10,9 @@
  * data: {"type":"error","message":"..."}
  */
 
-import { withAuth, sseEvent, SSE_HEADERS, errorResponse } from "./_lib/handler.js";
+import { withAuth, sseEvent, SSE_HEADERS, errorResponse, classifyAiError } from "./_lib/handler.js";
 import {
-  getClient,
+  withKeyFailover,
   MODEL,
   WORD_SCHEMA,
   FAST_THINKING,
@@ -22,6 +22,7 @@ import {
 } from "./_lib/gemini.js";
 import { parsePartialJson } from "./_lib/partialJson.js";
 import { checkAndConsumeLookupQuota } from "./_lib/quota.js";
+import { logLookupCost, type UsageLike } from "./_lib/costLog.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -33,8 +34,58 @@ const MIN_WORD_LENGTH = 2;
  * 記号や数字だけの意味不明な入力を AI に投げてトークンを無駄にしないためのガード。
  */
 const VALID_WORD_PATTERN = /^[a-z][a-z' -]*$/i;
+
+/**
+ * 明らかに英単語ではない綴りを、AI に投げる前に弾く。
+ *
+ * 共有キャッシュに "bbbbbbb" が入っているのを見つけた。文字種のチェックだけ
+ * では通ってしまい、生成の実費がかかったうえにキャッシュまで汚れる。
+ * 判定は「英単語ならまず起きないこと」だけに絞り、実在する語を誤って
+ * 弾かないようにしている（"aa"（溶岩）や "nth" のような語もあるため、
+ * 短い語や母音の有無だけでは判断しない）。
+ */
+function looksLikeGibberish(word: string): boolean {
+  const w = word.toLowerCase();
+
+  // 同じ文字が3つ以上続く。英語では "aaa" のような綴りは実質ない
+  if (/([a-z]){2,}/.test(w)) return true;
+
+  // 5文字以上で母音（y を含む）が1つも無い
+  if (w.length >= 5 && !/[aeiouy]/.test(w)) return true;
+
+  return false;
+}
 /** 部分結果を送る最小間隔。細かく送りすぎても描画が追いつかない。 */
 const PARTIAL_INTERVAL_MS = 200;
+
+/** 編集距離（Levenshtein）。短い入力の暴走した「訂正」を検知するためだけに使う簡易実装。 */
+function levenshtein(a: string, b: string): number {
+  const dp: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
+}
+
+/**
+ * AI が「綴りミス訂正」のつもりで、入力とかけ離れた無関係の単語を返してしまう
+ * 暴走を検知する。短い単語ほど別語への飛躍が起きやすいので閾値を厳しくする
+ * （例: "map" -> "manipulate" のような訂正を弾く）。
+ */
+function isSuspiciousCorrection(input: string, corrected: string): boolean {
+  const a = input.toLowerCase();
+  const b = corrected.toLowerCase();
+  if (a === b) return false;
+  const distance = levenshtein(a, b);
+  const threshold = Math.max(2, Math.ceil(a.length * 0.4));
+  return distance > threshold;
+}
 
 export async function POST(request: Request): Promise<Response> {
   return withAuth(request, "lookup", async (user, body) => {
@@ -48,27 +99,32 @@ export async function POST(request: Request): Promise<Response> {
     if (word.length > MAX_WORD_LENGTH) {
       return errorResponse(400, `単語が長すぎます（${MAX_WORD_LENGTH}文字まで）。`);
     }
-    if (!VALID_WORD_PATTERN.test(word)) {
+    if (!VALID_WORD_PATTERN.test(word) || looksLikeGibberish(word)) {
       return errorResponse(400, "英単語として認識できない入力です。");
     }
 
-    // フェアユース上限（日300/週1000/月2000）。キャッシュヒットはここに来ないので
+    // プラン別の検索上限（Free 日10 / Pro 日100）。キャッシュヒットはここに来ないので
     // 実際に AI 呼び出しが発生する検索だけがカウントされる。
     const authHeader = request.headers.get("authorization") ?? "";
     const idToken = authHeader.replace(/^Bearer\s+/i, "").trim();
     const quota = await checkAndConsumeLookupQuota(idToken, user.uid);
-    if (quota.ok === false) return errorResponse(429, quota.message);
+    if (quota.ok === false) {
+      // upgradable のときクライアントはアップグレード導線を出す
+      return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });
+    }
 
-    const ai = getClient();
-    const stream = await ai.models.generateContentStream({
-      model: MODEL,
-      contents: buildLookupPrompt(word, mode),
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: WORD_SCHEMA,
-        thinkingConfig: FAST_THINKING,
-      },
-    });
+    // キーが死んでいたら次のキーで引き直す（api/_lib/gemini.ts の withKeyFailover）
+    const stream = await withKeyFailover((ai) =>
+      ai.models.generateContentStream({
+        model: MODEL,
+        contents: buildLookupPrompt(word, mode),
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: WORD_SCHEMA,
+          thinkingConfig: FAST_THINKING,
+        },
+      })
+    );
 
     const encoder = new TextEncoder();
 
@@ -77,6 +133,8 @@ export async function POST(request: Request): Promise<Response> {
         let buffer = "";
         let lastSentAt = 0;
         let lastSentKeys = 0;
+        // 実費の実測用。usageMetadata は最後のチャンクに入る。
+        let usage: UsageLike | undefined;
 
         const send = (payload: unknown) => {
           controller.enqueue(encoder.encode(sseEvent(payload)));
@@ -84,6 +142,7 @@ export async function POST(request: Request): Promise<Response> {
 
         try {
           for await (const chunk of stream) {
+            if (chunk.usageMetadata) usage = chunk.usageMetadata as UsageLike;
             const text = chunk.text;
             if (!text) continue;
             buffer += text;
@@ -106,16 +165,43 @@ export async function POST(request: Request): Promise<Response> {
             send({ type: "partial", payload: { ...partial, mode: modeLabel(mode) } });
           }
 
-          const final = JSON.parse(buffer) as Record<string, unknown>;
+          logLookupCost(word, mode, usage);
+
+          let final = JSON.parse(buffer) as Record<string, unknown>;
+
+          // 「訂正」が暴走して無関係の単語に飛んでいないか確認し、怪しければ
+          // 綴りを固定した厳格プロンプトで1回だけ引き直す（ストリーミングはしない）。
+          if (
+            typeof final.word === "string" &&
+            isSuspiciousCorrection(word, final.word)
+          ) {
+            console.warn(`[api:lookup] suspicious correction "${word}" -> "${final.word}", retrying strict`);
+            try {
+              const retryRes = await withKeyFailover((ai) =>
+                ai.models.generateContent({
+                  model: MODEL,
+                  contents: buildLookupPrompt(word, mode, { forceExactSpelling: true }),
+                  config: {
+                    responseMimeType: "application/json",
+                    responseSchema: WORD_SCHEMA,
+                    thinkingConfig: FAST_THINKING,
+                  },
+                })
+              );
+              const retryText = retryRes.text;
+              if (retryText) final = JSON.parse(retryText) as Record<string, unknown>;
+            } catch (retryError) {
+              console.error("[api:lookup] strict retry failed", retryError);
+              // 引き直しに失敗しても、最初の（疑わしい）結果をそのまま返して検索は継続する
+            }
+          }
+
           send({ type: "done", payload: { ...final, mode: modeLabel(mode) } });
         } catch (e) {
           console.error("[api:lookup] stream error", e);
-          send({
-            type: "error",
-            message: e instanceof SyntaxError
-              ? "AI の応答を解釈できませんでした。もう一度お試しください。"
-              : "AI の応答に失敗しました。",
-          });
+          // 原因によって利用者が取れる行動が違うので、同じ判定を通す
+          const failure = classifyAiError(e);
+          send({ type: "error", message: failure.message, reason: failure.reason });
         } finally {
           controller.close();
         }

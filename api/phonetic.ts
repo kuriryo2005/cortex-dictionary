@@ -10,7 +10,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
-import { getClient, MODEL, FAST_THINKING } from "./_lib/gemini.js";
+import { withKeyFailover, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
 export const config = { runtime: "nodejs" };
@@ -31,18 +31,19 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(400, `単語が長すぎます（${MAX_WORD_LENGTH}文字まで）。`);
     }
 
-    const ai = getClient();
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents:
-        `Give the IPA pronunciation of the English word "${word}".\n` +
-        `Return the IPA WITHOUT surrounding slashes (e.g. ˈtɜːbjələns for "turbulence").`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: SCHEMA,
-        thinkingConfig: FAST_THINKING,
-      },
-    });
+    const response = await withKeyFailover((ai) =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents:
+          `Give the IPA pronunciation of the English word "${word}".\n` +
+          `Return the IPA WITHOUT surrounding slashes (e.g. ˈtɜːbjələns for "turbulence").`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: SCHEMA,
+          thinkingConfig: FAST_THINKING,
+        },
+      })
+    );
 
     const text = response.text ?? "";
     let phonetic = "";
@@ -57,5 +58,5 @@ export async function POST(request: Request): Promise<Response> {
     if (!phonetic) return errorResponse(502, "発音記号を取得できませんでした。");
 
     return jsonResponse({ phonetic });
-  });
+  }, "review");
 }
