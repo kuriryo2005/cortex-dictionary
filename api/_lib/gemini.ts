@@ -113,6 +113,9 @@ export async function withModelFallback<T>(run: (model: string) => Promise<T>): 
  * GEMINI_API_KEY_3, ... を環境変数に足すと、リクエストのたびに順番に
  * キーを切り替えて負荷を分散する（1キーだけの場合は従来どおり単一キーで動く）。
  */
+/** GEMINI_API_KEY_2 .. _30 まで探す。これ以上は現実的に使わない。 */
+const MAX_KEY_INDEX = 30;
+
 interface KeySlot {
   client: GoogleGenAI;
   /** このミリ秒まではこのキーを使わない（0 は健全）。 */
@@ -126,12 +129,14 @@ function loadSlots(): KeySlot[] {
   if (slots) return slots;
 
   const keys: string[] = [];
-  const primary = process.env.GEMINI_API_KEY;
+  const primary = process.env.GEMINI_API_KEY?.trim();
   if (primary) keys.push(primary);
-  for (let i = 2; ; i++) {
-    const extra = process.env[`GEMINI_API_KEY_${i}`];
-    if (!extra) break;
-    keys.push(extra);
+  // 抜け番があっても止まらないように、決まった範囲を最後まで見る。
+  // 以前は最初の空きで break していたため、本番に _2.._5 と _7.._12 が
+  // 入っていたときに 5 本しか読めず、容量が半分以下になっていた。
+  for (let i = 2; i <= MAX_KEY_INDEX; i++) {
+    const extra = process.env[`GEMINI_API_KEY_${i}`]?.trim();
+    if (extra) keys.push(extra);
   }
 
   if (keys.length === 0) {

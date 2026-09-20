@@ -12,7 +12,10 @@
  * ビルドのたびにアセット名が変わるので、古いキャッシュは activate で捨てる。
  */
 
-const VERSION = "v1";
+// 2026-09-20: v1 のまま中身だけ直していたため、古いビルドを掴んだ端末が
+// 更新されずに残っていた（無料枠が「1日10語」だった頃の画面を出し続けていた）。
+// キャッシュ名に版を持たせてあるので、ここを上げれば activate で古い分を捨てる。
+const VERSION = "v2";
 const SHELL = `shell-${VERSION}`;
 const ASSETS = `assets-${VERSION}`;
 

@@ -12,39 +12,55 @@
  * 検索は「利用枠の上限」で失敗する、という嘘をついていた。生成できるかを
  * 知りたいのだから、生成して確かめるしかない。
  *
- * maxOutputTokens を 1 にして消費を最小にし、結果は10分キャッシュする
- * （キー1本あたり1日144回程度で、無料枠から見ても無視できる）。
+ * さらに 2026-09-20、単一モデル（3.8-flash）だけを叩いていたため
+ * healthy 0/5 と出たが、実際には他のモデルには枠が残っていた。
+ * 無料枠の上限は**モデルごと**に付くので、本番のフォールバック連鎖と
+ * 同じ順でモデルを試し、どれか1つでも通ればそのキーは生きているとみなす。
  *
- * 返すのは本数と設定の有無だけで、キーそのものや設定値は一切出さない。
- * 本数が漏れて困ることはなく、止まっているのに気付けないほうが損失が大きい。
+ * maxOutputTokens を 1 にして消費を最小にし、結果は10分キャッシュする。
+ * 枠切れ（429）は消費されないので、全滅しているときの試行はタダで済む。
+ *
+ * 返すのは本数とモデル名だけで、キーそのものや設定値は一切出さない。
  */
 
 import { jsonResponse } from "./_lib/handler.js";
+import { MODEL, FALLBACK_MODELS } from "./_lib/gemini.js";
 
 export const config = { runtime: "nodejs" };
 
 /** 生成を伴う確認なので、頻繁には叩かない。 */
 const CACHE_MS = 10 * 60 * 1000;
-/** 本番の検索と同じモデルで確かめないと意味がない。 */
-const PROBE_MODEL = "gemini-3.8-flash";
-let cached: { at: number; healthy: number; total: number } | null = null;
+/** 本番の検索とまったく同じ順で試す。 */
+const CHAIN = [MODEL, ...FALLBACK_MODELS];
+/** GEMINI_API_KEY_2 .. _30 まで探す（api/_lib/gemini.ts と揃える）。 */
+const MAX_KEY_INDEX = 30;
+
+interface Probe {
+  at: number;
+  healthy: number;
+  total: number;
+  /** いま実際に生成できるモデル名（キーをまたいで1つでも通ったもの）。 */
+  models: string[];
+}
+let cached: Probe | null = null;
 
 function loadKeys(): string[] {
   const keys: string[] = [];
-  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
-  for (let i = 2; ; i++) {
-    const k = process.env[`GEMINI_API_KEY_${i}`];
-    if (!k) break;
-    keys.push(k);
+  const primary = process.env.GEMINI_API_KEY?.trim();
+  if (primary) keys.push(primary);
+  // 抜け番があっても止まらない。以前は最初の空きで break していたため、
+  // 番号が飛んでいると後ろのキーを丸ごと見落としていた。
+  for (let i = 2; i <= MAX_KEY_INDEX; i++) {
+    const k = process.env[`GEMINI_API_KEY_${i}`]?.trim();
+    if (k) keys.push(k);
   }
   return keys;
 }
 
-/** 実際に生成できるかを確かめる。枠切れ（402/429）はここで false になる。 */
-async function isUsable(key: string): Promise<boolean> {
+async function canGenerateWith(key: string, model: string): Promise<boolean> {
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${PROBE_MODEL}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       {
         method: "POST",
         headers: { "x-goog-api-key": key, "content-type": "application/json" },
@@ -60,12 +76,26 @@ async function isUsable(key: string): Promise<boolean> {
   }
 }
 
+/** このキーで生成できるモデルを1つ探す。見つからなければ null。 */
+async function firstUsableModel(key: string): Promise<string | null> {
+  for (const model of CHAIN) {
+    if (await canGenerateWith(key, model)) return model;
+  }
+  return null;
+}
+
 export async function GET(): Promise<Response> {
   const keys = loadKeys();
 
   if (!cached || Date.now() - cached.at > CACHE_MS) {
-    const results = await Promise.all(keys.map(isUsable));
-    cached = { at: Date.now(), healthy: results.filter(Boolean).length, total: keys.length };
+    const results = await Promise.all(keys.map(firstUsableModel));
+    const usable = results.filter((m): m is string => m !== null);
+    cached = {
+      at: Date.now(),
+      healthy: usable.length,
+      total: keys.length,
+      models: [...new Set(usable)],
+    };
   }
 
   const billingConfigured = Boolean(
@@ -82,6 +112,7 @@ export async function GET(): Promise<Response> {
     canGenerate: cached.healthy > 0,
     canSaveWords,
     keys: { healthy: cached.healthy, total: cached.total },
+    models: cached.models,
     billingConfigured,
     checkedAt: new Date(cached.at).toISOString(),
   });
