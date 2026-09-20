@@ -46,9 +46,8 @@ const FEATURES: { title: string; body: string }[] = [
 ];
 
 const FREE_POINTS = [
-  "既に辞書にある単語は引き放題",
-  "新しくAIが解説を作る単語は1日10語",
   "保存は30語まで（削除すれば入れ替え自由）",
+  "検索は1日30語まで",
   "フラッシュカード復習",
   "データの書き出し",
 ];
@@ -66,7 +65,7 @@ const PRO_POINTS = [
 const FAQ: { q: string; a: string }[] = [
   {
     q: "無料でどこまで使えますか？",
-    a: "調べるのは無料プランでもかなり自由です。既に辞書に入っている単語は引き放題で、まだ誰も調べていない単語をAIが新しく解説するときだけ1日10語までという上限があります。保存は30語までで、いらない単語を削除すれば枠が空きます。クレジットカードの登録は不要です。",
+    a: "検索は1日30語まで、保存は30語までです。保存した単語を削除すれば枠は空くので、入れ替えながら使えます。復習も語源グラフも無料のまま使えます。登録は Google アカウントだけで、支払い情報は一切必要ありません。",
   },
   {
     q: "既存の単語帳から移行できますか？",
@@ -153,7 +152,7 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
 
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <LoginButton />
-            <span className="text-xs text-[#8A9199]">クレジットカード不要 / 収録済みの単語は引き放題</span>
+            <span className="text-xs text-[#8A9199]">無料で30語まで保存できます / 登録は Google アカウントだけ</span>
           </div>
         </motion.header>
 

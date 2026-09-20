@@ -46,6 +46,10 @@ export interface QuotaLimit {
  * 実際には多くがキャッシュヒットするが、それに賭けた上限設定は危険。
  *
  * そこで Pro の検索は日100語・月1,500語に抑えた（学習者としては十分に多い）。
+ *
+ * 無料の検索は日30語にしてある。課金の壁は「保存30語」が担うので、検索側は
+ * 試している人を邪魔しない範囲で原価を抑えられればよい。保存が30語で止まる
+ * 以上、何百語も検索し続ける動機は薄く、数字も保存上限と揃えて覚えやすくした。
  * 実効ヒット率8割を見込むと原価は月540円程度に収まる。ここを実測で詰めるまでは
  * この保守的な上限を動かさないこと（実測は api/_lib/costLog.ts のログから）。
  *
@@ -54,7 +58,7 @@ export interface QuotaLimit {
  */
 export const PLAN_QUOTA: Record<PlanId, Record<QuotaBucket, QuotaLimit>> = {
   free: {
-    lookup: { day: 10, week: 40, month: 100 },
+    lookup: { day: 30, week: 120, month: 300 },
     extract: { day: 0, week: 0, month: 0 },
     story: { day: 3, week: 10, month: 20 },
     review: { day: 20, week: 80, month: 300 },

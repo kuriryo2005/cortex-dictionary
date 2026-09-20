@@ -31,7 +31,7 @@ export interface PlanStatus {
 export const FREE_STATUS: PlanStatus = {
   plan: "free",
   quota: {
-    lookup: { day: 10, week: 40, month: 100 },
+    lookup: { day: 30, week: 120, month: 300 },
     extract: { day: 0, week: 0, month: 0 },
     story: { day: 3, week: 10, month: 20 },
     review: { day: 20, week: 80, month: 300 },

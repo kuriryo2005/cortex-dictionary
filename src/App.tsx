@@ -1112,8 +1112,8 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                     }`}
                   >
                     {usage.remaining === 0
-                      ? "今日の新出単語はあと0語"
-                      : `今日の新出単語はあと ${usage.remaining} 語`}
+                      ? "今日の検索はあと0語"
+                      : `今日の検索はあと ${usage.remaining} 語`}
                   </span>
                 </span>
               )}
