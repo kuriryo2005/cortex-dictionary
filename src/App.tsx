@@ -1124,8 +1124,8 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                     }`}
                   >
                     {wordsLeft === 0
-                      ? `保存は上限の ${wordLimit} 語です`
-                      : `保存はあと ${wordsLeft} 語（無料は ${wordLimit} 語まで）`}
+                      ? `保存は上限の ${wordLimit} 語です（無料枠）`
+                      : `保存はあと ${wordsLeft} 語（無料枠）`}
                   </span>
                   {usage.remaining <= 5 && (
                     <span className="block font-normal mt-0.5 text-[#EA580C]">
