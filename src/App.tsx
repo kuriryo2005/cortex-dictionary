@@ -225,6 +225,11 @@ export default function App() {
   const { status: planStatus, isPro, refresh: refreshPlan } = usePlan(user);
   // 無料プランの「今日あと何語」。上限に対する納得感と Pro 検討のきっかけになる。
   const { usage, refresh: refreshUsage } = useUsage(user, planStatus);
+  // 無料プランの本当の壁は「保存は30語まで」。削除すれば枠は戻る。
+  // 検索の残りと同じ 30 という数字なので、どちらの話かを文言で区別する。
+  const wordLimit = planStatus.wordLimit;
+  const wordsLeft =
+    wordLimit === null ? Infinity : Math.max(0, wordLimit - savedWords.length);
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
 
@@ -1103,19 +1108,30 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
               ) : (
                 <span>
                   Pro にアップグレード
+                  {/*
+                    無料プランの本当の壁は「保存は30語まで」のほう。
+                    検索の残り（1日30語）を出していたら、どちらも 30 で紛らわしく、
+                    「無料枠は30語」の意味が伝わらなかった。
+                    枠は削除すれば戻るので、残り語数で出すのが実態に合う。
+                  */}
                   <span
                     className={`block font-normal mt-0.5 ${
-                      usage.remaining === 0
+                      wordsLeft === 0
                         ? "text-red-500"
-                        : usage.remaining <= 3
+                        : wordsLeft <= 3
                           ? "text-[#EA580C]"
                           : "text-[#8A9199]"
                     }`}
                   >
-                    {usage.remaining === 0
-                      ? "今日の検索はあと0語"
-                      : `今日の検索はあと ${usage.remaining} 語`}
+                    {wordsLeft === 0
+                      ? `保存は上限の ${wordLimit} 語です`
+                      : `保存はあと ${wordsLeft} 語（無料は ${wordLimit} 語まで）`}
                   </span>
+                  {usage.remaining <= 5 && (
+                    <span className="block font-normal mt-0.5 text-[#EA580C]">
+                      今日の検索はあと {usage.remaining} 語
+                    </span>
+                  )}
                 </span>
               )}
             </button>

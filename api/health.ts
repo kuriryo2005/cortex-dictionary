@@ -24,6 +24,7 @@
  */
 
 import { jsonResponse } from "./_lib/handler.js";
+import { getServiceAccessToken } from "./_lib/googleAuth.js";
 import {
   MODEL,
   FALLBACK_MODELS,
@@ -128,19 +129,38 @@ export async function GET(): Promise<Response> {
     }
   }
 
+  // 課金の設定。署名シークレットは「空文字が入っている」ことが実際にあったので、
+  // 存在ではなく形まで見る（whsec_ で始まる十分な長さ）。
+  const whsec = process.env.STRIPE_WEBHOOK_SECRET ?? "";
   const billingConfigured = Boolean(
-    process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_MONTHLY && process.env.STRIPE_WEBHOOK_SECRET
+    process.env.STRIPE_SECRET_KEY &&
+      process.env.STRIPE_PRICE_MONTHLY &&
+      whsec.startsWith("whsec_") &&
+      whsec.length > 20
   );
 
   // 単語の保存はサービスアカウント経由（api/save-words.ts）なので、
-  // これが無いと誰も単語を保存できない。設定漏れに気付けるよう外に出す。
-  const canSaveWords = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+  // これが動かないと誰も単語を保存できないし、契約も反映されない。
+  //
+  // 以前はここで「環境変数があるか」だけを見ていた。しかし本番では
+  // 変数はあるのに中身が壊れた JSON で、JSON.parse が落ちて保存も課金も
+  // 失敗していた。**それでも canSaveWords は true を返していた。**
+  // 有無ではなく、実際にトークンを取れるところまで確かめる。
+  let canSaveWords = false;
+  let saveWordsError: string | undefined;
+  try {
+    canSaveWords = Boolean(await getServiceAccessToken());
+  } catch (e) {
+    saveWordsError = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+  }
 
   return jsonResponse({
     // 収録済みの単語の検索と復習はキーが無くても動くので、ここが false でも
     // アプリ全体が止まっているわけではない（新しい単語の生成だけが止まる）。
     canGenerate: cached.healthy > 0,
     canSaveWords,
+    // 保存が動かないとき、何が悪いのかをここで言い切る
+    ...(saveWordsError ? { saveWordsError } : {}),
     keys: { healthy: cached.healthy, total: cached.total },
     models: cached.models,
     // traffic … 実際の検索の結果（枠を消費しない）

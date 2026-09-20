@@ -24,12 +24,51 @@ interface ServiceAccount {
 
 let cached: { token: string; expiresAt: number } | null = null;
 
+/**
+ * サービスアカウントを読む。
+ *
+ * ここは本番で実際に壊れていた。Vercel の環境変数に JSON をそのまま貼ると、
+ * private_key の改行エスケープが**本物の改行**になって JSON として不正になる。
+ * その結果 JSON.parse が落ち、**単語の保存も契約の反映も全部失敗していた。**
+ * しかも /api/health は変数の有無しか見ていなかったので気付けなかった。
+ *
+ * 以前の実装は改行を改行に置き換えるだけの無意味なコードで、コメントだけが
+ * 「両対応」と言っていて実態が伴っていなかった。
+ *
+ * 貼り方を人間に間違えさせない作りにはできないので、受け取る側で吸収する。
+ */
 function readServiceAccount(): ServiceAccount {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT が設定されていません。");
-  // Vercel の環境変数に貼るとき改行が \n のままになることがあるので両対応にする
-  const json = JSON.parse(raw) as ServiceAccount;
-  return { ...json, private_key: json.private_key.replace(/\n/g, "\n") };
+
+  const attempts: Array<() => unknown> = [
+    // 1. そのまま読む（正しく入っていればこれで通る）
+    () => JSON.parse(raw),
+    // 2. 文字列の中に生の改行が混ざった場合。PEM 本文だけが壊れる典型例
+    () => JSON.parse(raw.replace(/\r/g, "").replace(/\n/g, "\n")),
+    // 3. base64 で入れてある場合
+    () => JSON.parse(Buffer.from(raw, "base64").toString("utf8")),
+  ];
+
+  let lastError: unknown;
+  for (const attempt of attempts) {
+    try {
+      const json = attempt() as ServiceAccount;
+      if (!json?.client_email || !json?.private_key) continue;
+      return {
+        ...json,
+        // PEM 内のエスケープされた改行を本物の改行に戻す。既に改行ならそのまま
+        private_key: json.private_key.replace(/\n/g, "\n"),
+      };
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw new Error(
+    "FIREBASE_SERVICE_ACCOUNT を JSON として読めませんでした。" +
+      "サービスアカウントの JSON をそのまま貼るか、base64 にして入れてください。" +
+      `（${lastError instanceof Error ? lastError.message : String(lastError)}）`
+  );
 }
 
 /** Firestore を読み書きできるアクセストークンを返す（有効期限まで使い回す）。 */
