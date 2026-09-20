@@ -124,7 +124,34 @@ function slugify(root: string): string {
   return root.replace(/[^a-z-]/g, "");
 }
 
-function renderPage(root: string, meaning: string, words: CachedWord[]): string {
+/**
+ * 他の語源ページへのリンク。
+ *
+ * 1ページだけ読んで終わるのを避ける。検索エンジンにとってもページ同士が
+ * つながっていることが重要で、孤立したページは評価されにくい。
+ */
+function renderSiblings(current: string, all: { root: string; meaning: string }[]): string {
+  const others = all.filter((r) => r.root !== current);
+  if (others.length === 0) return "";
+  const links = others
+    .map((r) => `<a href="/root/${slugify(r.root)}/">${escapeHtml(r.root)}（${escapeHtml(r.meaning)}）</a>`)
+    .join(" ");
+  return `    <nav class="siblings">
+      <h2>ほかの語源から探す</h2>
+      <p>
+        ${links}
+      </p>
+      <p><a href="/root/">索引をすべて見る</a></p>
+    </nav>
+`;
+}
+
+function renderPage(
+  root: string,
+  meaning: string,
+  words: CachedWord[],
+  siblings: { root: string; meaning: string }[]
+): string {
   const title = meaning
     ? `語源 ${root}（${escapeHtml(meaning)}）から広がる英単語 ${words.length}語`
     : `語源 ${root} を共有する英単語 ${words.length}語`;
@@ -173,6 +200,12 @@ function renderPage(root: string, meaning: string, words: CachedWord[]): string 
   .cta a { display:inline-block; background:#1A1C1E; color:#fff; text-decoration:none;
            font-weight:700; font-size:14px; padding:12px 20px; }
   .cta p { color:#656E77; font-size:13px; }
+  .siblings { margin-top:48px; border-top:1px solid #EDEFF1; padding-top:24px; }
+  .siblings h2 { font-size:12px; font-weight:700; letter-spacing:.1em; color:#8A9199; margin:0 0 12px; }
+  .siblings p { margin:0 0 10px; line-height:2.2; }
+  .siblings a { color:#1A1C1E; font-weight:700; text-decoration:none;
+                border-bottom:1px solid #C4C9CE; margin-right:18px; font-size:14px; }
+  .siblings a:hover { border-color:#1A1C1E; }
   footer { margin-top:64px; font-size:11px; color:#8A9199; }
   footer a { color:#8A9199; }
 </style>
@@ -189,7 +222,7 @@ ${items}
          シルエットで表示されるので、次に覚えるべき単語が一目でわかります。</p>
       <a href="${SITE}/">Cortex Dictionary を無料で使う</a>
     </div>
-    <footer><a href="${SITE}/">Cortex Dictionary</a></footer>
+${renderSiblings(root, siblings)}    <footer><a href="${SITE}/">Cortex Dictionary</a></footer>
   </div>
 </body>
 </html>
@@ -243,6 +276,8 @@ mkdirSync(OUT_DIR, { recursive: true });
 
 const generated: { root: string; count: number }[] = [];
 
+const siblings = [...byRoot.values()].map(({ entry }) => ({ root: entry.root, meaning: entry.meaning }));
+
 for (const [root, { entry, words: all }] of byRoot) {
   const slug = slugify(root);
   if (!slug) continue;
@@ -251,7 +286,7 @@ for (const [root, { entry, words: all }] of byRoot) {
 
   const dir = join(OUT_DIR, slug);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "index.html"), renderPage(root, entry.meaning, pageWords), "utf-8");
+  writeFileSync(join(dir, "index.html"), renderPage(root, entry.meaning, pageWords, siblings), "utf-8");
   generated.push({ root, count: pageWords.length });
 }
 
