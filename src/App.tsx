@@ -61,6 +61,7 @@ import { DataTransferModal } from "./components/DataTransferModal";
 import { ReviewMode } from "./components/ReviewMode";
 import { Dashboard } from "./components/Dashboard";
 import { FirstRun } from "./components/FirstRun";
+import { ServiceNotice } from "./components/ServiceNotice";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
 import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
@@ -1155,6 +1156,10 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
 
       {/* Main Content */}
       <main className="flex-1 h-full overflow-y-auto bg-white p-6 md:p-10 lg:p-16 print:h-auto print:overflow-visible print:p-0">
+        {/* 生成が止まっているときだけ出る。検索してエラーを踏む前に伝える */}
+        <div className="print:hidden">
+          <ServiceNotice />
+        </div>
         <AnimatePresence mode="wait">
           {activeTab === "home" && savedWords.length === 0 ? (
             // 保存が1語も無い人にはダッシュボードではなく最初の一歩を出す。
