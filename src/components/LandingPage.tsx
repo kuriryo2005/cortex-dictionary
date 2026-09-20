@@ -260,19 +260,28 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
             語根ごとに単語をまとめたページを用意しています。ログインしなくても読めるので、
             どんな解説が出るのか先に見てみてください。
           </p>
-          <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2">
+          {/*
+            スマホでの指の当たりを確保する。実測すると高さ 20px しかなく、
+            目安（44px）の半分以下だった。X からの流入はほとんどスマホなので、
+            押しにくいリンクはそのまま離脱になる。py で当たりだけ広げ、
+            見た目の行間は変えない。
+          */}
+          <div className="mt-6 flex flex-wrap gap-x-5 gap-y-1">
             {ROOT_LINKS.map((r) => (
               <a
                 key={r.slug}
                 href={`/root/${r.slug}/`}
-                className="text-sm font-bold text-[#1A1C1E] underline decoration-[#C4C9CE] underline-offset-4 hover:decoration-[#1A1C1E]"
+                className="inline-flex items-center min-h-11 py-2 text-sm font-bold text-[#1A1C1E] underline decoration-[#C4C9CE] underline-offset-4 hover:decoration-[#1A1C1E]"
               >
                 {r.label}
               </a>
             ))}
           </div>
-          <p className="mt-6">
-            <a href="/root/" className="text-sm font-bold text-[#2A5CFF] hover:text-[#1A3FCC]">
+          <p className="mt-4">
+            <a
+              href="/root/"
+              className="inline-flex items-center min-h-11 py-2 text-sm font-bold text-[#2A5CFF] hover:text-[#1A3FCC]"
+            >
               語源の索引をすべて見る →
             </a>
           </p>
@@ -294,7 +303,8 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
           </div>
         </section>
 
-        <footer className="mt-24 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[#EDEFF1] pt-6 text-[11px] text-[#8A9199]">
+        {/* 規約・特商法へのリンクは法的に必要なので、押せないと困る。ここも当たりを広げる */}
+        <footer className="mt-24 flex flex-wrap items-center gap-x-5 border-t border-[#EDEFF1] pt-4 text-xs text-[#8A9199] [&_a]:inline-flex [&_a]:items-center [&_a]:min-h-11 [&_a]:py-2">
           <span>Cortex Dictionary</span>
           <a href="/legal/terms.html" className="hover:text-[#1A1C1E]">
             利用規約
