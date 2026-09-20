@@ -106,6 +106,20 @@ const ROOT_LINKS: { slug: string; label: string }[] = [
 const Rule: React.FC = () => <div className="border-t border-[#EDEFF1]" />;
 
 export const LandingPage: React.FC<Props> = ({ onLogin }) => {
+  /**
+   * 語源ページから `/?w=<単語>` で来た人は、特定の単語を読んでいる途中にいる。
+   * ログインすればその単語がすぐ開くことを伝えると、離脱しにくくなる。
+   * 表示に使うだけなので、おかしな値は無視する。
+   */
+  const pendingWord = (() => {
+    try {
+      const w = new URLSearchParams(window.location.search).get("w")?.trim().toLowerCase() ?? "";
+      return /^[a-z][a-z' -]{1,63}$/.test(w) ? w : null;
+    } catch {
+      return null;
+    }
+  })();
+
   const LoginButton: React.FC<{ label?: string }> = ({ label = "Google で無料ではじめる" }) => (
     <button type="button" onClick={onLogin} className="btn-primary">
       <LogIn className="w-4 h-4" />
@@ -129,6 +143,12 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
             つながったマップとして描き出す英単語アプリ。単語を1つ覚えるたびに、その周りの
             知らない単語まで見えるようになります。
           </p>
+          {pendingWord && (
+            <p className="mt-6 border-l-2 border-[#2A5CFF] pl-4 text-sm text-[#1A1C1E]">
+              ログインすると <strong className="font-black">{pendingWord}</strong> の解説がすぐ開きます。
+            </p>
+          )}
+
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <LoginButton />
             <span className="text-xs text-[#8A9199]">クレジットカード不要 / 収録済みの単語は引き放題</span>

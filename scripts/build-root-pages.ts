@@ -164,7 +164,7 @@ function renderPage(
   const items = words
     .map(
       (w) => `      <li class="word">
-        <h2>${escapeHtml(w.word)}</h2>
+        <h2><a href="${SITE}/?w=${encodeURIComponent(w.word.toLowerCase())}">${escapeHtml(w.word)}</a></h2>
         <p class="meaning">${escapeHtml(w.meaning)}</p>
         ${w.etymology ? `<p class="etym">${escapeHtml(w.etymology)}</p>` : ""}
       </li>`
@@ -194,6 +194,9 @@ function renderPage(
   ul { list-style:none; margin:0; padding:0; }
   .word { border-top:1px solid #EDEFF1; padding:20px 0; }
   .word h2 { font-size:18px; font-weight:900; margin:0 0 4px; }
+  /* 単語からアプリへ直接飛ばす。読んでいた語をそのまま引けるようにするため */
+  .word h2 a { color:#1A1C1E; text-decoration:none; }
+  .word h2 a:hover { color:#2A5CFF; }
   .meaning { margin:0; font-size:14px; }
   .etym { margin:6px 0 0; font-size:13px; color:#656E77; }
   .cta { margin-top:56px; border-top:1px solid #EDEFF1; padding-top:28px; }

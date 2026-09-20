@@ -234,6 +234,30 @@ export default function App() {
   };
 
   /**
+   * 語源ページから `/?w=<単語>` で来た人を、その単語の検索結果まで運ぶ。
+   *
+   * 検索でたどり着いた人は、特定の単語を読んでいる途中でここに来る。
+   * ログイン後に空の画面を見せると、何を調べに来たのか分からなくなる。
+   * 一度だけ実行して、URL からは取り除く（リロードで再実行しない）。
+   */
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (!user || deepLinkDone.current) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const word = (params.get("w") ?? "").trim().toLowerCase();
+    if (!word || !/^[a-z][a-z' -]{1,63}$/.test(word)) return;
+
+    deepLinkDone.current = true;
+    params.delete("w");
+    const query = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
+
+    setSearchQuery(word);
+    void handleSearch(undefined, word);
+  }, [user]);
+
+  /**
    * 英文からの一括抽出は Pro 限定。サーバー側でも弾いているが、押してから
    * エラーを見せるより、押した瞬間に案内を出すほうが伝わる。
    */
