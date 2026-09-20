@@ -80,7 +80,6 @@ import {
 } from "firebase/auth";
 import { 
   collection, 
-  addDoc, 
   query, 
   where, 
   onSnapshot, 
