@@ -83,6 +83,45 @@ export function isModelUnavailable(error: unknown): boolean {
  * `run` はモデル名を受け取って呼び出しを行う。キーの切り替えは
  * withKeyFailover が内側で面倒を見るので、ここはモデルだけを変える。
  */
+/**
+ * 実際の検索で「どのモデルが通ったか / 詰まったか」を記録しておく台帳。
+ *
+ * /api/health は当初、確認のために自分で1トークン生成していた。しかし
+ * 無料枠の上限はモデルごとに1日20回しかない。10分おきに全キー全モデルを
+ * 叩けば、それだけで1日144回。**監視が枠を食い尽くして本番を止めていた。**
+ * 観測行為が観測対象を壊す、最悪の形になっていた。
+ *
+ * 本番の検索はどのみち成否を知っているのだから、それを書き留めれば
+ * 追加の消費はゼロで済む。health はこれを読むだけにする。
+ *
+ * サーバーレスなのでインスタンスごとの部分的な記録にしかならないが、
+ * 「枠を食わずに、実際に起きたことだけを報告する」ほうが、正確に嘘をつく
+ * よりはるかにいい。
+ */
+export interface ModelObservation {
+  model: string;
+  ok: boolean;
+  at: number;
+}
+const observations = new Map<string, ModelObservation>();
+
+function record(model: string, ok: boolean): void {
+  observations.set(model, { model, ok, at: Date.now() });
+}
+
+/** 直近に生成が通ったモデル（新しい順）。 */
+export function observedWorkingModels(): string[] {
+  return [...observations.values()]
+    .filter((o) => o.ok)
+    .sort((a, b) => b.at - a.at)
+    .map((o) => o.model);
+}
+
+/** 何か1件でも観測できているか（まだ誰も検索していなければ false）。 */
+export function hasObservations(): boolean {
+  return observations.size > 0;
+}
+
 export async function withModelFallback<T>(run: (model: string) => Promise<T>): Promise<T> {
   // 9モデルを順に試すと、全滅に近いときに何分も待たせてしまう。実測で138秒
   // かかったことがあるので、全体の締め切りを設けて打ち切る。
@@ -95,10 +134,13 @@ export async function withModelFallback<T>(run: (model: string) => Promise<T>): 
       break;
     }
     try {
-      return await run(model);
+      const result = await run(model);
+      record(model, true);
+      return result;
     } catch (e) {
       lastError = e;
       if (!isModelUnavailable(e)) throw e; // モデルのせいでないならすぐ返す
+      record(model, false);
       console.warn(`[gemini] ${model} が使えないので次のモデルを試します`);
     }
   }

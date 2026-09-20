@@ -24,12 +24,25 @@
  */
 
 import { jsonResponse } from "./_lib/handler.js";
-import { MODEL, FALLBACK_MODELS } from "./_lib/gemini.js";
+import {
+  MODEL,
+  FALLBACK_MODELS,
+  observedWorkingModels,
+  hasObservations,
+  healthyKeyCount,
+} from "./_lib/gemini.js";
 
 export const config = { runtime: "nodejs" };
 
-/** 生成を伴う確認なので、頻繁には叩かない。 */
-const CACHE_MS = 10 * 60 * 1000;
+/**
+ * 実際に生成して確かめるのは、まだ一度も本番の検索が走っていないときだけ。
+ * しかも1時間に1回まで。
+ *
+ * 10分おきに全キー×全モデルを叩いていたときは、それだけで1日144回。
+ * 無料枠は通常 Flash が1日20回なので、**監視が本番の枠を食い潰していた。**
+ * 普段は本番の検索が残した記録（gemini.ts の台帳）を読むだけにする。
+ */
+const CACHE_MS = 60 * 60 * 1000;
 /** 本番の検索とまったく同じ順で試す。 */
 const CHAIN = [MODEL, ...FALLBACK_MODELS];
 /** GEMINI_API_KEY_2 .. _30 まで探す（api/_lib/gemini.ts と揃える）。 */
@@ -87,15 +100,32 @@ async function firstUsableModel(key: string): Promise<string | null> {
 export async function GET(): Promise<Response> {
   const keys = loadKeys();
 
-  if (!cached || Date.now() - cached.at > CACHE_MS) {
-    const results = await Promise.all(keys.map(firstUsableModel));
-    const usable = results.filter((m): m is string => m !== null);
+  // 本番の検索が実際に通っているなら、それ以上確かめる必要はない（消費ゼロ）。
+  const observed = observedWorkingModels();
+  let source: "traffic" | "probe";
+
+  if (hasObservations()) {
+    source = "traffic";
     cached = {
       at: Date.now(),
-      healthy: usable.length,
+      // 退避中でないキーの本数。台帳に成功が1件も無ければ、本数に関係なく 0
+      // （キーは生きていてもモデルが全部詰まっている、という状態を見逃さない）。
+      healthy: observed.length > 0 ? healthyKeyCount() : 0,
       total: keys.length,
-      models: [...new Set(usable)],
+      models: observed,
     };
+  } else {
+    source = "probe";
+    if (!cached || Date.now() - cached.at > CACHE_MS) {
+      const results = await Promise.all(keys.map(firstUsableModel));
+      const usable = results.filter((m): m is string => m !== null);
+      cached = {
+        at: Date.now(),
+        healthy: usable.length,
+        total: keys.length,
+        models: [...new Set(usable)],
+      };
+    }
   }
 
   const billingConfigured = Boolean(
@@ -113,6 +143,9 @@ export async function GET(): Promise<Response> {
     canSaveWords,
     keys: { healthy: cached.healthy, total: cached.total },
     models: cached.models,
+    // traffic … 実際の検索の結果（枠を消費しない）
+    // probe   … まだ検索が無いので1トークン生成して確かめた
+    source,
     billingConfigured,
     checkedAt: new Date(cached.at).toISOString(),
   });
