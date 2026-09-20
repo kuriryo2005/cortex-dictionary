@@ -12,6 +12,7 @@
 import React from "react";
 import { motion } from "motion/react";
 import { LogIn, Check } from "lucide-react";
+import { MapPreview } from "./MapPreview";
 
 interface Props {
   onLogin: () => void;
@@ -154,6 +155,14 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
             <span className="text-xs text-[#8A9199]">クレジットカード不要 / 収録済みの単語は引き放題</span>
           </div>
         </motion.header>
+
+        {/* 語彙マップの見本。このアプリで一番伝わるものを、登録前に見せる */}
+        <section className="mt-16 border-t border-[#EDEFF1] pt-14">
+          <h2 className="text-xs font-bold tracking-widest text-[#8A9199]">覚えた単語はこうつながります</h2>
+          <div className="mt-6">
+            <MapPreview />
+          </div>
+        </section>
 
         <div className="mt-20">
           <Rule />
