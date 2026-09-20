@@ -6,7 +6,8 @@ AI（Gemini）で英単語を引き、意味・文法・語源・ニュアンス
 - 技術構成: React 19 / Vite / Tailwind CSS 4 / Firebase (Auth + Firestore) / Google Gemini / Vercel
 - AI Studio 由来: https://ai.studio/apps/f55ff9db-e50f-4a01-bdbe-7636a1265750
 
-> リポジトリ名は歴史的経緯で `LexiLog` のまま。アプリ名は `Cortex Dictionary`。
+> リポジトリは `cortex-dictionary`（旧 `LexiLog`）。古いリモート URL でも push はできるが、
+> Vercel などの連携は新しい名前を指しているか確認すること。
 
 ## 主な機能
 
