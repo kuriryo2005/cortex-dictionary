@@ -14,7 +14,10 @@
 
 import { ImageResponse } from "@vercel/og";
 
-export const config = { runtime: "edge" };
+// Edge ランタイムでは @vercel/og の依存を解決できずビルドが落ちる
+// （The Edge Function "api/og" is referencing unsupported modules）。
+// 他の API と同じ Node.js ランタイムで動かす。
+export const config = { runtime: "nodejs" };
 
 const EYEBROW = "CORTEX DICTIONARY";
 const TITLE_1 = "英単語を、";
