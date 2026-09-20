@@ -80,6 +80,29 @@ const FAQ: { q: string; a: string }[] = [
   },
 ];
 
+/**
+ * 語源ごとのまとめページへの入口。
+ *
+ * この21ページはサイトマップにしか載っておらず、どこからもリンクされて
+ * いなかった。検索エンジンはリンクを辿ってページを見つけるので、孤立した
+ * ままでは評価されにくい。訪問者にとっても、ログイン前に中身を確かめられる
+ * 唯一の場所なので、ここから入れるようにしておく。
+ */
+const ROOT_LINKS: { slug: string; label: string }[] = [
+  { slug: "vert", label: "vert（向きを変える）" },
+  { slug: "ten", label: "ten（保つ）" },
+  { slug: "fer", label: "fer（運ぶ）" },
+  { slug: "fac", label: "fac（作る）" },
+  { slug: "vid", label: "vid（見る）" },
+  { slug: "ced", label: "ced（行く・譲る）" },
+  { slug: "pon", label: "pon（置く）" },
+  { slug: "sist", label: "sist（立つ）" },
+  { slug: "plic", label: "plic（折る）" },
+  { slug: "ven", label: "ven（来る）" },
+  { slug: "port", label: "port（運ぶ）" },
+  { slug: "mit", label: "mit（送る）" },
+];
+
 const Rule: React.FC = () => <div className="border-t border-[#EDEFF1]" />;
 
 export const LandingPage: React.FC<Props> = ({ onLogin }) => {
@@ -189,6 +212,35 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
               </div>
             ))}
           </div>
+        </section>
+
+        <div className="mt-20">
+          <Rule />
+        </div>
+
+        {/* 語源から探す（ログイン前に中身を確かめられる唯一の入口） */}
+        <section className="pt-16">
+          <h2 className="text-xs font-bold tracking-widest text-[#8A9199]">語源から探す</h2>
+          <p className="mt-4 text-sm leading-relaxed text-[#656E77]">
+            語根ごとに単語をまとめたページを用意しています。ログインしなくても読めるので、
+            どんな解説が出るのか先に見てみてください。
+          </p>
+          <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2">
+            {ROOT_LINKS.map((r) => (
+              <a
+                key={r.slug}
+                href={`/root/${r.slug}/`}
+                className="text-sm font-bold text-[#1A1C1E] underline decoration-[#C4C9CE] underline-offset-4 hover:decoration-[#1A1C1E]"
+              >
+                {r.label}
+              </a>
+            ))}
+          </div>
+          <p className="mt-6">
+            <a href="/root/" className="text-sm font-bold text-[#2A5CFF] hover:text-[#1A3FCC]">
+              語源の索引をすべて見る →
+            </a>
+          </p>
         </section>
 
         <div className="mt-20">
