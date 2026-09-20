@@ -2,11 +2,21 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Analytics} from '@vercel/analytics/react';
 import App from './App.tsx';
+import { CoachMarksHarness } from './components/CoachMarksHarness';
 import './index.css';
+
+/**
+ * 開発時だけ、コーチマークの見え方を確かめる画面に切り替える。
+ * 本物のアプリはログインしないとサイドバーが出ず、囲みの位置を確認できない。
+ *   http://localhost:3100/?coach=1
+ * import.meta.env.DEV で囲んであるので本番のバンドルには入らない。
+ */
+const showCoachHarness =
+  import.meta.env.DEV && new URLSearchParams(location.search).has('coach');
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {showCoachHarness ? <CoachMarksHarness /> : <App />}
     <Analytics />
   </StrictMode>,
 );

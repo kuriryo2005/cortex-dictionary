@@ -65,6 +65,7 @@ import { ServiceNotice } from "./components/ServiceNotice";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
 import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
+import { CoachMarks, hasSeenCoach, markCoachSeen } from "./components/CoachMarks";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
 import { Skeleton } from "./components/ui/skeleton";
@@ -173,6 +174,7 @@ export default function App() {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   /** 初回のスタートアップガイド。スキップ・完了のどちらでも二度と自動では出さない */
   const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [isCoachOpen, setIsCoachOpen] = useState(false);
 
   const decks = useDecks(user?.uid ?? null);
 
@@ -215,10 +217,22 @@ export default function App() {
    * ランディングページの裏で開いてしまわないよう、user が入ってから判定する。
    * 既読の判定は localStorage なので、消せばまた出る（出し直したい人向け）。
    */
+  /**
+   * 初めて使う人には、スライドショーではなく実物を指すコーチマークを出す。
+   * 読んで閉じた瞬間に忘れるのは、説明と「どこを押すか」が結びつかないため。
+   * 一度見た人（旧ガイドの既読者を含む）には出さない。
+   */
   useEffect(() => {
     if (!user) return;
-    if (hasSeenGuide()) return;
-    setIsGuideOpen(true);
+    if (hasSeenCoach()) return;
+    if (hasSeenGuide()) {
+      // 旧ガイドを見終わっている人にいまさら出すと邪魔なので、見たことにする
+      markCoachSeen();
+      return;
+    }
+    // 画面が組み上がってから測りたいので1フレーム待つ
+    const id = requestAnimationFrame(() => setIsCoachOpen(true));
+    return () => cancelAnimationFrame(id);
   }, [user]);
 
   // 課金プラン。取得に失敗しても free として動くので UI は壊れない。
@@ -777,7 +791,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             </Button>
           </div>
 
-          <form onSubmit={handleSearch} className="relative group">
+          <form onSubmit={handleSearch} className="relative group" data-coach="search">
             <Input
               placeholder="単語を検索"
               value={searchQuery}
@@ -818,7 +832,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
           </form>
 
           {/* 検索モード。検索欄のすぐ下に小さく置く（一覧の高さを食わない） */}
-          <div className="flex gap-4 mt-2">
+          <div className="flex gap-4 mt-2" data-coach="mode">
             {[
               { mode: DictionaryMode.GENERAL, label: "一般" },
               { mode: DictionaryMode.ACADEMIC, label: "学術" },
@@ -845,7 +859,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
           サイドバーの上半分が操作系で埋まり、肝心の単語一覧が数行しか見えない
           原因になっていたので、2 列に詰めて 3 行に収める。
         */}
-        <nav className="px-6 pb-3 shrink-0 grid grid-cols-2 gap-x-3">
+        <nav className="px-6 pb-3 shrink-0 grid grid-cols-2 gap-x-3" data-coach="nav">
           {[
             { key: "wordbook", icon: BookOpen, label: "単語帳", onClick: () => setActiveTab("wordbook") },
             { key: "home", icon: Home, label: "今日の学習", onClick: () => setActiveTab("home") },
@@ -1127,11 +1141,21 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                       ? `保存は上限の ${wordLimit} 語です（無料枠）`
                       : `保存はあと ${wordsLeft} 語（無料枠）`}
                   </span>
-                  {usage.remaining <= 5 && (
-                    <span className="block font-normal mt-0.5 text-[#EA580C]">
-                      今日の検索はあと {usage.remaining} 語
-                    </span>
-                  )}
+                  {/*
+                    検索の残りは常に出す。隠していたら「検索は無限にできるの？」と
+                    誤解された。上限は保存数と検索数の2本立てで、どちらもある。
+                  */}
+                  <span
+                    className={`block font-normal mt-0.5 ${
+                      usage.remaining === 0
+                        ? "text-red-500"
+                        : usage.remaining <= 5
+                          ? "text-[#EA580C]"
+                          : "text-[#8A9199]"
+                    }`}
+                  >
+                    新しい検索は今日あと {usage.remaining} 語
+                  </span>
                 </span>
               )}
             </button>
@@ -1549,6 +1573,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
             reason={upgradeReason}
           />
           <StartupGuide open={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
+          <CoachMarks open={isCoachOpen} onClose={() => setIsCoachOpen(false)} />
           <BulkExtractModal
             open={isExtractOpen}
             onClose={() => setIsExtractOpen(false)}
