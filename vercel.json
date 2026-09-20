@@ -3,7 +3,12 @@
   "headers": [
     {
       "source": "/(icons/.*|og.png|brand-x-header.png)",
-      "headers": [{ "key": "Access-Control-Allow-Origin", "value": "*" }]
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
     }
   ]
 }
