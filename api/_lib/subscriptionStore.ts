@@ -30,6 +30,10 @@ export interface SubscriptionRecord {
  * 書き換えられる形にはしておかない。
  */
 function isValidUid(uid: string): boolean {
+  // Firestore は __…__ という形のドキュメント ID を予約語として拒否する。
+  // 実ユーザーの uid では起きないが、通ってしまうと 400 が 500 になって
+  // Stripe に再送させ続けることになるので、ここで弾いておく。
+  if (/^__.*__$/.test(uid)) return false;
   return /^[A-Za-z0-9_-]{1,128}$/.test(uid);
 }
 

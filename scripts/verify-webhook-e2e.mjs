@@ -27,7 +27,9 @@ const env = Object.fromEntries(
 
 const BASE = "https://lexi-log-puce.vercel.app";
 const WHSEC = env.STRIPE_WEBHOOK_SECRET;
-const UID = "__e2e_webhook_check__";
+// Firestore は __…__ という形の ID を予約語として拒否する（400）。
+// 実ユーザーの uid（28文字の英数）と同じ形にしておく。
+const UID = "e2eWebhookCheckDoNotUse0001";
 if (!WHSEC) throw new Error("STRIPE_WEBHOOK_SECRET がありません。");
 
 /** Stripe と同じ形式で署名する（t=…,v1=HMAC-SHA256(t.payload)）。 */
