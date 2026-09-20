@@ -32,12 +32,12 @@ const NODES: Node[] = [
   { word: "diverse", ja: "多様な", angle: 90, radius: 120 },
   { word: "avert", ja: "回避する", angle: 150, radius: 104 },
   { word: "vertigo", ja: "めまい", angle: -150, radius: 124, unknown: true },
-  { word: "introvert", ja: "内向的な人", angle: -60, radius: 196, unknown: true },
-  { word: "controversial", ja: "物議を醸す", angle: 60, radius: 200, unknown: true },
+  { word: "introvert", ja: "内向的な人", angle: -55, radius: 178, unknown: true },
+  { word: "controversial", ja: "物議を醸す", angle: 55, radius: 182, unknown: true },
 ];
 
 const CX = 250;
-const CY = 190;
+const CY = 215;
 
 function pos(n: Node): { x: number; y: number } {
   const rad = (n.angle * Math.PI) / 180;
@@ -47,7 +47,7 @@ function pos(n: Node): { x: number; y: number } {
 export const MapPreview: React.FC = () => (
   <figure className="m-0">
     <svg
-      viewBox="0 0 500 380"
+      viewBox="0 0 500 440"
       role="img"
       aria-label="語源 vert でつながる英単語のマップ。中心の vert から divert、adverse、version、diverse、avert などが放射状に伸びている。"
       className="w-full"
