@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#ffffff"/>
+  <text x="80" y="112" font-family="Yu Gothic UI, Meiryo, sans-serif" font-size="22" font-weight="700" letter-spacing="6" fill="#2A5CFF">CORTEX DICTIONARY</text>
+  <text x="80" y="248" font-family="Yu Gothic UI, Meiryo, sans-serif" font-size="76" font-weight="700" fill="#1A1C1E">英単語を、</text>
+  <text x="80" y="348" font-family="Yu Gothic UI, Meiryo, sans-serif" font-size="76" font-weight="700" fill="#1A1C1E">バラバラに覚えるのをやめる。</text>
+  <rect x="80" y="470" width="1040" height="1" fill="#EDEFF1"/>
+  <text x="80" y="528" font-family="Yu Gothic UI, Meiryo, sans-serif" font-size="27" fill="#656E77">意味・語源・専門分野ごとの用法を AI が一度に解説し、</text>
+  <text x="80" y="572" font-family="Yu Gothic UI, Meiryo, sans-serif" font-size="27" fill="#656E77">語源でつながるマップに描く。</text>
+</svg>

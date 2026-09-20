@@ -155,7 +155,7 @@ function renderPage(root: string, meaning: string, words: CachedWord[]): string 
 <meta property="og:title" content="${escapeHtml(title)}" />
 <meta property="og:description" content="${escapeHtml(description)}" />
 <meta property="og:url" content="${url}" />
-<meta property="og:image" content="${SITE}/api/og" />
+<meta property="og:image" content="${SITE}/og.png" />
 <style>
   :root { color-scheme: light; }
   body { margin:0; background:#fff; color:#1A1C1E;
