@@ -54,7 +54,7 @@ service cloud.firestore {
              (!('updatedAt' in data) || data.updatedAt is number) &&
              (!('deckId' in data) || data.deckId == null || (data.deckId is string && data.deckId.size() <= 128)) &&
              (!('enrichStatus' in data) || (data.enrichStatus in ['pending', 'done', 'error'])) &&
-             // v3 追加：単語帳の紙面用。すべて optional
+             // v3 追加: 単語帳の紙面用。すべて optional
              (!('senses' in data) || (data.senses is list && data.senses.size() <= 8)) &&
              (!('targetPhrases' in data) || (data.targetPhrases is list && data.targetPhrases.size() <= 8)) &&
              (!('derivatives' in data) || (data.derivatives is list && data.derivatives.size() <= 8)) &&
@@ -155,7 +155,7 @@ service cloud.firestore {
                       (incoming().lastStudiedOn is string && incoming().lastStudiedOn.size() <= 10));
     }
 
-    // AI 呼び出しの利用上限カウンタ（日/週/月 × 種類別）。
+    // AI 呼び出しの利用上限カウンタ（日/週/月 x 種類別）。
     //
     // 以前は本人の ID トークンで書かせていたが、それでは上限機構として
     // 成立していなかった。ユーザーが自分のカウンタを 0 に戻せば何度でも
@@ -169,7 +169,7 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // ── 課金プラン ───────────────────────────────────────────────
+    // -- 課金プラン -----------------------------------------------
     // 契約状態は Stripe Webhook（サーバー側のサービスアカウント）だけが
     // 書き込む。ユーザーは自分の契約を読めるだけで、書き換えは一切できない。
     // これを緩めると誰でも自分を Pro にできてしまうので絶対に変更しないこと。
