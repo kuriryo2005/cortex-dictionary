@@ -23,7 +23,23 @@ import { spawnSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 const DRY = args.includes("--dry-run");
-const sk = args.find((a) => a.startsWith("sk_live_") || a.startsWith("rk_live_"));
+// 本番キーが原則。ただし --dry-run のときだけテストキーも受け付ける。
+// このスクリプトは審査が通った日に一度しか動かさない。ぶっつけ本番にしないため、
+// 事前にテストキーで通しの予行演習ができるようにしておく。
+const sk = args.find((a) => /^(sk|rk)_(live|test)_/.test(a));
+const isTestKey = sk ? sk.includes("_test_") : false;
+
+if (isTestKey && !DRY) {
+  console.error(`
+渡されたのはテストキーです。本番の開通には sk_live_ で始まる鍵が要ります。
+予行演習なら --dry-run を付けてください（何も作成しません）。
+`);
+  process.exit(1);
+}
+if (isTestKey) {
+  console.log("");
+  console.log("※ テストキーでの予行演習です。実際には何も作成しません。");
+}
 
 if (!sk) {
   console.error(`
@@ -65,12 +81,15 @@ function vercel(a, input) {
 // --- 1. アカウントの状態 ---
 const acct = await stripe("GET", "/account");
 console.log(`\nアカウント: ${acct.country} / 請求受付: ${acct.charges_enabled ? "可" : "不可"} / 入金: ${acct.payouts_enabled ? "可" : "不可"}`);
-if (!acct.charges_enabled) {
+if (!acct.charges_enabled && !isTestKey) {
   console.error(`
 まだ請求を受け付けられません。審査が完了していないか、追加の情報を求められています。
 Stripe ダッシュボードの通知を確認してください。ここで止めます。
 `);
   process.exit(1);
+}
+if (!acct.charges_enabled && isTestKey) {
+  console.log("（テストモードなので請求受付が不可でも先へ進みます）");
 }
 
 // --- 2. 商品と価格 ---
