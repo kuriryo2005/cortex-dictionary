@@ -20,7 +20,16 @@ import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
  * thinkingLevel に切り替えている（下記 FAST_THINKING 参照。MINIMAL は 3.8-flash
  * では無効なので使えず、最速設定は LOW）。
  */
-export const MODEL = "gemini-3.8-flash";
+/**
+ * 主力モデル。
+ *
+ * 2026-09-20: gemini-3.8-flash から 3.6-flash に変更した。3.8 は 503
+ * （high demand）を返し続けて実際に検索が止まったうえ、同じ単価で
+ * 3.6 のほうが語源の説明が丁寧だった（turbulence で比較したところ、
+ * 3.6 は turba まで遡るが lite 系は「動詞に由来する」で止まる）。
+ * 語源がこのアプリの中心なので、そこが厚いほうを選ぶ。
+ */
+export const MODEL = "gemini-3.6-flash";
 
 /**
  * MODEL が使えないときに順に試す代替モデル。
@@ -29,10 +38,11 @@ export const MODEL = "gemini-3.8-flash";
  * demand）を返し続け、検索が丸ごと止まった。キーの自動退避は作ってあったが、
  * モデル側が詰まったときの逃げ道が無く、1モデルに全面依存していた。
  *
- * 品質の近い 3.6-flash を先に、最後に軽くて安い 3.5-flash-lite を置く。
+ * 軽くて安い 3.5-flash-lite を先に置く（実測で 3.7秒 / 0.39円 と速く、
+ * 構造は主力と同じ）。混雑が明けていれば 3.8-flash も試す。
  * 解説がやや簡素になっても、止まるよりははるかにいい。
  */
-export const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"] as const;
+export const FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash"] as const;
 
 /**
  * モデルが一時的に使えないことを示すエラーか。
