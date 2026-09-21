@@ -64,7 +64,7 @@ export async function withAuth(
 
   if (quotaBucket) {
     const idToken = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-    const quota = await checkAndConsumeQuota(idToken, user.uid, quotaBucket);
+    const quota = await checkAndConsumeQuota(idToken, user.uid, quotaBucket, user);
     if (quota.ok === false) {
       // upgradable のときクライアントはアップグレード導線を出す
       return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });

@@ -109,9 +109,42 @@ export interface PlanState {
   currentPeriodEnd?: number;
   /** Stripe 側で解約予約済みか（期末まで Pro のまま）。 */
   cancelAtPeriodEnd?: boolean;
+  /**
+   * 上限を一切かけない。運営者本人だけ。
+   *
+   * 開発と動作確認のたびに自分の枠を使い切ってしまうと、本番の状態を
+   * 確かめられなくなる。実際、障害対応中に何度も上限に当たった。
+   */
+  unlimited?: boolean;
 }
 
 const FREE: PlanState = { plan: "free" };
+
+/**
+ * 上限をかけない運営者のメールアドレス（カンマ区切り、環境変数 OWNER_EMAILS）。
+ *
+ * ソースに直接書かない。リポジトリが公開された場合に個人のメールアドレスが
+ * そのまま残るため。設定が無ければ誰も該当しない（安全側に倒す）。
+ */
+function ownerEmails(): string[] {
+  return (process.env.OWNER_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * このメールアドレスは運営者か。
+ *
+ * ID トークンは jose の jwtVerify で署名・iss・aud を検証済み（api/_lib/auth.ts）
+ * なので、そこから取り出した email は詐称できない。ただし Google 以外の
+ * プロバイダを将来足したときのために、検証済みフラグも要求する。
+ */
+export function isOwner(email: string | undefined, emailVerified: boolean | undefined): boolean {
+  if (!email || emailVerified === false) return false;
+  const list = ownerEmails();
+  return list.length > 0 && list.includes(email.toLowerCase());
+}
 
 /**
  * `subscriptions/{uid}` を読んで現在のプランを返す。
@@ -120,7 +153,16 @@ const FREE: PlanState = { plan: "free" };
  * 期限には Stripe の請求失敗を考慮して 3 日の猶予を持たせる（webhook の
  * 取りこぼしでいきなり止まるのを防ぐ）。
  */
-export async function resolvePlan(idToken: string, uid: string): Promise<PlanState> {
+export async function resolvePlan(
+  idToken: string,
+  uid: string,
+  owner?: { email?: string; emailVerified?: boolean }
+): Promise<PlanState> {
+  // 運営者は Stripe を見るまでもなく無制限。契約が無くても上限にかからない。
+  if (isOwner(owner?.email, owner?.emailVerified)) {
+    return { plan: "pro", unlimited: true };
+  }
+
   const GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
   let fields: Record<string, any> | undefined;

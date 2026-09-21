@@ -24,6 +24,11 @@ const JWKS = createRemoteJWKSet(
 export interface AuthedUser {
   uid: string;
   email?: string;
+  /**
+   * Google などの発行元がメールアドレスを確認済みか。
+   * 運営者の判定（plan.ts の isOwner）で使うので、無いときは信用しない。
+   */
+  emailVerified?: boolean;
 }
 
 export class AuthError extends Error {
@@ -66,5 +71,9 @@ export async function requireUser(request: Request): Promise<AuthedUser> {
     throw new AuthError("トークンの auth_time が不正です。");
   }
 
-  return { uid, email: typeof payload.email === "string" ? payload.email : undefined };
+  return {
+    uid,
+    email: typeof payload.email === "string" ? payload.email : undefined,
+    emailVerified: payload.email_verified === true,
+  };
 }

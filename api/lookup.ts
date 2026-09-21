@@ -21,11 +21,18 @@ import {
   modeLabel,
   type ModeSlug,
 } from "./_lib/gemini.js";
+import type { GoogleGenAI } from "@google/genai";
 import { parsePartialJson } from "./_lib/partialJson.js";
 import { checkAndConsumeLookupQuota } from "./_lib/quota.js";
 import { logLookupCost, type UsageLike } from "./_lib/costLog.js";
 
-export const config = { runtime: "nodejs" };
+/**
+ * 混雑時は同じモデルで待って粘り、駄目なら別モデルへ降りる（合計 20 秒まで）。
+ * 実行時間の上限を明示しておかないと、粘っている途中でプラットフォーム側に
+ * 打ち切られて、こちらの丁寧なエラーではなく素の 504 が利用者に出る。
+ * 30 秒はどのプランでも許される範囲。
+ */
+export const config = { runtime: "nodejs", maxDuration: 30 };
 
 const MAX_WORD_LENGTH = 64;
 /** 「a」のような1文字や、入力途中の断片で AI を呼ばないための下限。 */
@@ -108,34 +115,16 @@ export async function POST(request: Request): Promise<Response> {
     // 実際に AI 呼び出しが発生する検索だけがカウントされる。
     const authHeader = request.headers.get("authorization") ?? "";
     const idToken = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const quota = await checkAndConsumeLookupQuota(idToken, user.uid);
+    const quota = await checkAndConsumeLookupQuota(idToken, user.uid, user);
     if (quota.ok === false) {
       // upgradable のときクライアントはアップグレード導線を出す
       return errorResponse(429, quota.message, { plan: quota.plan, upgradable: quota.upgradable });
     }
 
-    // キーが死んでいたら次のキーで、モデルが詰まっていたら次のモデルで引き直す
-    const stream = await withModelFallback((model) =>
-      withKeyFailover((ai) =>
-        ai.models.generateContentStream({
-          model,
-          contents: buildLookupPrompt(word, mode),
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: WORD_SCHEMA,
-            thinkingConfig: FAST_THINKING,
-          },
-        })
-      )
-    );
-
     const encoder = new TextEncoder();
 
     const readable = new ReadableStream<Uint8Array>({
       async start(controller) {
-        let buffer = "";
-        let lastSentAt = 0;
-        let lastSentKeys = 0;
         // 実費の実測用。usageMetadata は最後のチャンクに入る。
         let usage: UsageLike | undefined;
 
@@ -143,15 +132,51 @@ export async function POST(request: Request): Promise<Response> {
           controller.enqueue(encoder.encode(sseEvent(payload)));
         };
 
-        try {
+        /**
+         * 1 モデル・1 キーで最後まで読み切る。返すのは受け取った JSON 文字列。
+         *
+         * **ここが失敗の主犯だった。**
+         * 以前は generateContentStream の「呼び出し」だけを withModelFallback /
+         * withKeyFailover で包み、**読み出しのループは包みの外**にあった。
+         * Gemini の 503 は接続直後だけでなく本文を流している最中にも飛んでくる。
+         * その場合どのキーにもどのモデルにも切り替わらないまま
+         * 「AI が混み合っています」がそのまま利用者へ出ていた。
+         * 12 本のキーと 9 個のモデルを用意してあっても、検索の本流である
+         * この経路だけが素通しになっていた。
+         *
+         * 生成と読み出しをひとつの単位にして、まとめて包み直す。
+         *
+         * @param quiet 再試行のときは true。途中経過を送り直さない
+         *   （一度出した内容が、作り直しの途中で一瞬減って見えるのを避ける）。
+         */
+        const readOnce = async (model: string, ai: GoogleGenAI, quiet: boolean) => {
+          const stream = await ai.models.generateContentStream({
+            model,
+            contents: buildLookupPrompt(word, mode),
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: WORD_SCHEMA,
+              thinkingConfig: FAST_THINKING,
+            },
+          });
+
+          let buffer = "";
+          let lastSentAt = 0;
+          let lastSentKeys = 0;
+
           for await (const chunk of stream) {
             if (chunk.usageMetadata) usage = chunk.usageMetadata as UsageLike;
             const text = chunk.text;
             if (!text) continue;
             buffer += text;
 
+            if (quiet) continue;
+
             const now = Date.now();
-            if (now - lastSentAt < PARTIAL_INTERVAL_MS) continue;
+            // 1 通目だけは間引かない。
+            // 最初の 200ms は「何も出ていない時間」そのもので、体感にいちばん響く。
+            // 2 通目以降は従来どおり間引いて、送りすぎで描画を詰まらせない。
+            if (lastSentAt !== 0 && now - lastSentAt < PARTIAL_INTERVAL_MS) continue;
 
             const partial = parsePartialJson(buffer);
             if (!partial) continue;
@@ -168,9 +193,28 @@ export async function POST(request: Request): Promise<Response> {
             send({ type: "partial", payload: { ...partial, mode: modeLabel(mode) } });
           }
 
-          logLookupCost(word, mode, usage);
+          // 空の応答も、途中で切れて JSON として読めない応答も、ここで
+          // 失敗にしておく。包みの外で JSON.parse すると、壊れた本文が
+          // 再試行されずにそのまま「AI の応答を解釈できませんでした」になる。
+          if (!buffer.trim()) throw new Error("503 empty stream (model returned nothing)");
+          try {
+            return JSON.parse(buffer) as Record<string, unknown>;
+          } catch {
+            throw new Error("503 truncated stream (response was not valid JSON)");
+          }
+        };
 
-          let final = JSON.parse(buffer) as Record<string, unknown>;
+        try {
+          let attempted = false;
+          let final = await withModelFallback((model) =>
+            withKeyFailover((ai) => {
+              const quiet = attempted;
+              attempted = true;
+              return readOnce(model, ai, quiet);
+            })
+          );
+
+          logLookupCost(word, mode, usage);
 
           // 「訂正」が暴走して無関係の単語に飛んでいないか確認し、怪しければ
           // 綴りを固定した厳格プロンプトで1回だけ引き直す（ストリーミングはしない）。

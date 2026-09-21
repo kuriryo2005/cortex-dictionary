@@ -53,8 +53,9 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const idToken = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-    const { plan } = await resolvePlan(idToken, user.uid);
-    const limit = PLAN_WORD_LIMIT[plan];
+    const { plan, unlimited } = await resolvePlan(idToken, user.uid, user);
+    // 運営者は保存数も無制限（PLAN_WORD_LIMIT を見ない）
+    const limit = unlimited ? null : PLAN_WORD_LIMIT[plan];
 
     if (source === "restore" && plan !== "pro") {
       return errorResponse(403, "バックアップからの復元は Pro プランの機能です。", {

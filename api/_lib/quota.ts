@@ -132,9 +132,14 @@ const BUCKET_LABEL: Record<QuotaBucket, string> = {
 export async function checkAndConsumeQuota(
   idToken: string,
   uid: string,
-  bucket: QuotaBucket
+  bucket: QuotaBucket,
+  owner?: { email?: string; emailVerified?: boolean }
 ): Promise<QuotaResult> {
-  const { plan } = await resolvePlan(idToken, uid);
+  const { plan, unlimited } = await resolvePlan(idToken, uid, owner);
+
+  // 運営者は数えない。カウンタも書かない（自分の動作確認で枠を消費しないため）
+  if (unlimited) return { ok: true, plan };
+
   const limit = PLAN_QUOTA[plan][bucket];
   const what = BUCKET_LABEL[bucket];
 
@@ -233,6 +238,10 @@ export async function checkAndConsumeQuota(
 }
 
 /** 既存の呼び出し元のための薄い別名。 */
-export function checkAndConsumeLookupQuota(idToken: string, uid: string): Promise<QuotaResult> {
-  return checkAndConsumeQuota(idToken, uid, "lookup");
+export function checkAndConsumeLookupQuota(
+  idToken: string,
+  uid: string,
+  owner?: { email?: string; emailVerified?: boolean }
+): Promise<QuotaResult> {
+  return checkAndConsumeQuota(idToken, uid, "lookup", owner);
 }
