@@ -1,5 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/health.ts": { "maxDuration": 20 }
+  },
   "headers": [
     {
       "source": "/(icons/.*|og.png|brand-x-header.png)",

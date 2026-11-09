@@ -95,6 +95,8 @@ export async function getServiceAccessToken(): Promise<string> {
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion,
     }),
+    // 既定では締め切りが無く、返らないと呼び出し側（health・webhook）が丸ごと止まる
+    signal: AbortSignal.timeout(8_000),
   });
   if (!res.ok) {
     throw new Error(`アクセストークンの取得に失敗しました: ${res.status} ${await res.text()}`);

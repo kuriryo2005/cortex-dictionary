@@ -57,6 +57,7 @@ interface Probe {
   models: string[];
 }
 let cached: Probe | null = null;
+let cachedTtl = CACHE_MS;
 
 function loadKeys(): string[] {
   const keys: string[] = [];
@@ -71,7 +72,19 @@ function loadKeys(): string[] {
   return keys;
 }
 
-async function canGenerateWith(key: string, model: string): Promise<boolean> {
+/**
+ * 時間の上限。2026-11-05、デプロイ直後（台帳が空 → probe）に1本の fetch が
+ * 返らず、/api/health が 300 秒でタイムアウトした。fetch には既定の締め切りが
+ * 無いので、1回ごとと全体の両方に上限を付ける。
+ */
+const PROBE_CALL_MS = 4_000;
+const PROBE_TOTAL_MS = 8_000;
+/** 締め切りで打ち切った結果は信用しきれないので、短く持つ。 */
+const PARTIAL_CACHE_MS = 5 * 60 * 1000;
+
+async function canGenerateWith(key: string, model: string, deadline: number): Promise<boolean> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -82,6 +95,7 @@ async function canGenerateWith(key: string, model: string): Promise<boolean> {
           contents: [{ parts: [{ text: "hi" }] }],
           generationConfig: { maxOutputTokens: 1 },
         }),
+        signal: AbortSignal.timeout(Math.min(PROBE_CALL_MS, remaining)),
       }
     );
     return res.ok;
@@ -91,11 +105,21 @@ async function canGenerateWith(key: string, model: string): Promise<boolean> {
 }
 
 /** このキーで生成できるモデルを1つ探す。見つからなければ null。 */
-async function firstUsableModel(key: string): Promise<string | null> {
+async function firstUsableModel(key: string, deadline: number): Promise<string | null> {
   for (const model of CHAIN) {
-    if (await canGenerateWith(key, model)) return model;
+    if (Date.now() >= deadline) return null;
+    if (await canGenerateWith(key, model, deadline)) return model;
   }
   return null;
+}
+
+/** 返らない Promise に応答全体を引きずられないための保険。 */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} が ${ms}ms 以内に終わりませんでした`)), ms);
+  });
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer));
 }
 
 export async function GET(): Promise<Response> {
@@ -117,15 +141,18 @@ export async function GET(): Promise<Response> {
     };
   } else {
     source = "probe";
-    if (!cached || Date.now() - cached.at > CACHE_MS) {
-      const results = await Promise.all(keys.map(firstUsableModel));
+    if (!cached || Date.now() - cached.at > cachedTtl) {
+      const deadline = Date.now() + PROBE_TOTAL_MS;
+      const results = await Promise.all(keys.map((k) => firstUsableModel(k, deadline)));
       const usable = results.filter((m): m is string => m !== null);
+      const partial = Date.now() >= deadline;
       cached = {
         at: Date.now(),
         healthy: usable.length,
         total: keys.length,
         models: [...new Set(usable)],
       };
+      cachedTtl = partial ? PARTIAL_CACHE_MS : CACHE_MS;
     }
   }
 
@@ -149,7 +176,7 @@ export async function GET(): Promise<Response> {
   let canSaveWords = false;
   let saveWordsError: string | undefined;
   try {
-    canSaveWords = Boolean(await getServiceAccessToken());
+    canSaveWords = Boolean(await withDeadline(getServiceAccessToken(), 5_000, "アクセストークンの取得"));
   } catch (e) {
     saveWordsError = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
   }
