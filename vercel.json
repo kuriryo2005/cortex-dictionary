@@ -13,5 +13,23 @@
         }
       ]
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/ig-webhook",
+      "destination": "/api/billing-webhook?src=ig"
+    },
+    {
+      "source": "/w",
+      "destination": "/api/lookup?page=index"
+    },
+    {
+      "source": "/w/",
+      "destination": "/api/lookup?page=index"
+    },
+    {
+      "source": "/w/:word",
+      "destination": "/api/lookup?page=word&w=:word"
+    }
   ]
 }

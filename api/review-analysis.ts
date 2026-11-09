@@ -66,7 +66,7 @@ export async function POST(request: Request): Promise<Response> {
             },
             thinkingConfig: FAST_THINKING,
           },
-        })
+        }), model
       )
     );
 

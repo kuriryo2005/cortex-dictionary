@@ -30,8 +30,11 @@ if (!keyFile) {
 const key = keyFile.replace(/\.txt$/, "");
 
 // sitemap.xml から URL を読む（公開済みのものだけが載っている）
-const sitemap = readFileSync(join(process.cwd(), "public", "sitemap.xml"), "utf-8");
-const urlList = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+// 単語ページ（sitemap-words.xml、実験 E1）も含める。IndexNow は 1 回 10,000 件まで
+const urlList = ["sitemap.xml", "sitemap-words.xml"].flatMap((f) => {
+  const xml = readFileSync(join(process.cwd(), "public", f), "utf-8");
+  return [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+}).slice(0, 10_000);
 
 console.log(`ホスト: ${host}`);
 console.log(`鍵: ${key}`);

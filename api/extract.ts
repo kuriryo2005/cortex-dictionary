@@ -11,6 +11,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
+import { groqJson, isGroqConfigured } from "./_lib/groq.js";
 import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
@@ -56,38 +57,51 @@ export async function POST(request: Request): Promise<Response> {
       : [];
     const knownSet = new Set(known);
 
-    const response = await withModelFallback((model) =>
-      withKeyFailover((ai) =>
-        ai.models.generateContent({
-          model,
-          contents:
-            `Extract vocabulary worth learning from the English text below.\n\n` +
-            `Rules:\n` +
-            `- Target an advanced learner (CEFR B2 and above). Skip basic words.\n` +
-            `- Return the dictionary form (lemma): "running" → "run", "studies" → "study".\n` +
-            `- No proper nouns, numbers, or duplicates.\n` +
-            `- At most ${MAX_CANDIDATES} entries, ordered by usefulness.\n` +
-            `- meaningShort: a short Japanese gloss (under 30 characters).\n` +
-            `- level: one of B2, C1, C2, technical.\n` +
-            `- sentence: the sentence from the text where the word appears, verbatim.\n` +
-            (known.length
-              ? `- The learner already knows these words, exclude them:\n${known.join(", ")}\n`
-              : "") +
-            `\n--- TEXT ---\n${text}`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: SCHEMA,
-            thinkingConfig: FAST_THINKING,
-          },
-        })
-      )
-    );
+    const prompt =
+      `Extract vocabulary worth learning from the English text below.\n\n` +
+      `Rules:\n` +
+      `- Target an advanced learner (CEFR B2 and above). Skip basic words.\n` +
+      `- Return the dictionary form (lemma): "running" → "run", "studies" → "study".\n` +
+      `- No proper nouns, numbers, or duplicates.\n` +
+      `- At most ${MAX_CANDIDATES} entries, ordered by usefulness.\n` +
+      `- meaningShort: a short Japanese gloss (under 30 characters).\n` +
+      `- level: one of B2, C1, C2, technical.\n` +
+      `- sentence: the sentence from the text where the word appears, verbatim.\n` +
+      (known.length
+        ? `- The learner already knows these words, exclude them:\n${known.join(", ")}\n`
+        : "") +
+      `\n--- TEXT ---\n${text}`;
 
     let parsed: { candidates?: unknown };
     try {
-      parsed = JSON.parse(response.text ?? "");
-    } catch {
-      return errorResponse(502, "AI の応答を解釈できませんでした。");
+      const response = await withModelFallback((model) =>
+        withKeyFailover((ai) =>
+          ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: SCHEMA,
+              thinkingConfig: FAST_THINKING,
+            },
+          }), model
+        )
+      );
+      try {
+        parsed = JSON.parse(response.text ?? "");
+      } catch {
+        return errorResponse(502, "AI の応答を解釈できませんでした。");
+      }
+    } catch (geminiError) {
+      // 未知語の抽出は語源の知識を要さず、しかも利用者が待っている処理なので
+      // Gemini が詰まっているときは Groq に回す（語源系には回さない）。
+      if (!isGroqConfigured()) throw geminiError;
+      console.warn("[api:extract] gemini が全滅したので groq に回します");
+      try {
+        parsed = await groqJson<{ candidates?: unknown }>(prompt, SCHEMA);
+      } catch {
+        throw geminiError; // 保険も駄目なら元の理由を見せる
+      }
     }
 
     const seen = new Set<string>();

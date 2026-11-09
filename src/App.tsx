@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import {
   BookOpen,
   Plus,
@@ -32,6 +32,7 @@ import { usePlan } from "./hooks/usePlan";
 import { saveWords, SaveLimitError } from "./services/wordService";
 import { useUsage } from "./hooks/useUsage";
 import { UpgradeModal } from "./components/UpgradeModal";
+import { ShareWord } from "./components/ShareWord";
 import { LandingPage } from "./components/LandingPage";
 import {
   TARGET_SCHEMA_VERSION,
@@ -54,8 +55,22 @@ import {
   onVoicesReady,
   speak,
 } from "./lib/tts";
-import { EtymologyGraph } from "./components/EtymologyGraph";
-import { KnowledgeMap } from "./components/KnowledgeMap";
+/**
+ * 語源グラフは d3 を引き連れていて重い。
+ * 静的に読むと、詳細ページを最初に描くだけで d3 の読み込みと実行が挟まる。
+ * 実際に画面へ入るまで読み込まない（下の DeferredMount と組で使う）。
+ */
+const EtymologyGraph = lazy(() =>
+  import("./components/EtymologyGraph").then((m) => ({ default: m.EtymologyGraph }))
+);
+/**
+ * つながり図も力学グラフ（react-force-graph-2d）を抱えていて重い。
+ * 専用のタブでしか出ないので、そのタブを開くまで読み込まない。
+ * これで d3 系がまとめて初期バンドルから外れる。
+ */
+const KnowledgeMap = lazy(() =>
+  import("./components/KnowledgeMap").then((m) => ({ default: m.KnowledgeMap }))
+);
 import { Wordbook } from "./components/Wordbook";
 import { DataTransferModal } from "./components/DataTransferModal";
 import { ReviewMode } from "./components/ReviewMode";
@@ -65,6 +80,7 @@ import { ServiceNotice } from "./components/ServiceNotice";
 import { DeckManager } from "./components/DeckManager";
 import { BulkExtractModal } from "./components/BulkExtractModal";
 import { StartupGuide, hasSeenGuide } from "./components/StartupGuide";
+import { DeferredMount } from "./components/DeferredMount";
 import { CoachMarks, hasSeenCoach, markCoachSeen } from "./components/CoachMarks";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
@@ -125,6 +141,24 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 /** サイドバーの1ページ分の件数（実装仕様書 F2-c） */
 const SIDEBAR_PAGE_SIZE = 100;
+
+/**
+ * 画面の切り替え。
+ *
+ * AnimatePresence は mode="wait" なので、**古い画面が消えきるまで新しい画面を
+ * 組み立てない**。退場の時間がそのまま「何も出ていない時間」になる。
+ * 既定のままだと実測 431ms あり、検索を押してから見出しが出るまでの遅れの
+ * 大半がこれだった（通信でも描画でもなく、待たされていただけ）。
+ *
+ * 退場は見送るだけなので短くていい。入場だけ少し長く取って、
+ * 切り替わったことは分かるようにする。
+ */
+const VIEW_MOTION = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: { duration: 0.12, ease: "easeOut" as const },
+};
 
 function WordSkeleton() {
   return (
@@ -478,15 +512,23 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
 
     setLoading(true);
     setIsStreaming(true);
-    setResult(null);
+    // 押した瞬間に、その単語だけ入った器を置く。
+    //
+    // 以前はここで null にしていたので、共有キャッシュへの問い合わせ（往復）と
+    // AI の生成が終わるまで灰色の骨組みしか出ず、何を調べているのかすら
+    // 画面から消えていた。先に見出しだけ出しておけば、残りは届いた順に
+    // 埋まっていくので、同じ待ち時間でも「もう始まっている」と感じられる。
+    setResult(coerceWordDetail({ word: query }));
     setSuggestions([]);
     setShowSuggestions(false);
     setActiveTab("detail");
 
     try {
       const detail = await lookupWord(query, dictionaryMode, (partial) => {
-        // 意味が届いた時点で描画を始める。全項目が揃うのを待たない。
-        if (!partial?.meaning) return;
+        // 語か意味のどちらかが届いた時点で描き始める。全項目は待たない。
+        // 以前は meaning が来るまで捨てていたので、綴りの自動訂正が
+        // 画面に出るのも意味が揃うまで遅れていた。
+        if (!partial?.word && !partial?.meaning) return;
         setResult(coerceWordDetail(partial));
         setLoading(false);
       });
@@ -816,6 +858,10 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                   {suggestions.map((s) => (
                     <button
                       key={s.id}
+                      // form の中の button は既定で submit。指定しないと、入力欄で Enter を
+                      // 押したときにブラウザがこの候補を「押したことに」してしまい、
+                      // stress と打ったのに候補の distress が開いていた。
+                      type="button"
                       onClick={() => {
                         setSearchQuery(s.word);
                         handleSearch(undefined, s.word);
@@ -1213,7 +1259,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
               />
             </motion.div>
           ) : activeTab === "home" ? (
-            <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <motion.div key="home" {...VIEW_MOTION}>
               <Dashboard
                 words={filteredWords}
                 decks={decks.decks}
@@ -1236,11 +1282,16 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
           ) : activeTab === "map" ? (
              <motion.div
                key="map"
-               initial={{ opacity: 0, y: 10 }}
-               animate={{ opacity: 1, y: 0 }}
-               exit={{ opacity: 0, y: -10 }}
+               {...VIEW_MOTION}
                className="h-full"
              >
+               <Suspense
+                 fallback={
+                   <div className="h-full flex items-center justify-center">
+                     <Loader2 className="w-5 h-5 animate-spin text-[#C9CDD2]" />
+                   </div>
+                 }
+               >
                <KnowledgeMap
                  words={filteredWords}
                  onWordClick={(w) => {
@@ -1271,9 +1322,10 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                    }
                  }}
                />
+               </Suspense>
              </motion.div>
           ) : activeTab === "wordbook" ? (
-            <motion.div key="wordbook" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <motion.div key="wordbook" {...VIEW_MOTION}>
               <Wordbook
                 words={filteredWords}
                 onWordClick={(w) => {
@@ -1289,12 +1341,10 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
               onGrade={handleReview}
               onExit={exitFlashcards}
             />
-          ) : loading ? (
+          ) : loading && !result ? (
              <motion.div
                key="skeleton"
-               initial={{ opacity: 0 }}
-               animate={{ opacity: 1 }}
-               exit={{ opacity: 0 }}
+               {...VIEW_MOTION}
                className="h-full flex flex-col"
              >
                <WordSkeleton />
@@ -1302,9 +1352,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
           ) : result ? (
             <motion.div
               key={result.word}
-              initial={{ opacity: 0, x: 10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -10 }}
+              {...VIEW_MOTION}
               className="max-w-4xl mx-auto flex flex-col h-full"
             >
               <div className="flex justify-between items-start gap-6 mb-10">
@@ -1338,16 +1386,29 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                       .join(" · ")}
                   </p>
                 </div>
+                {/* 生成が終わるまでは中身が空なので押させない */}
                 <button
                   type="button"
                   onClick={saveWord}
-                  disabled={isResultSaved}
+                  disabled={isResultSaved || isStreaming}
                   className="btn-quiet shrink-0 px-0 text-sm"
                 >
                   <Plus className="w-4 h-4" />
-                  {isResultSaved ? "保存済み" : "リストに追加"}
+                  {isStreaming ? "生成中" : isResultSaved ? "保存済み" : "リストに追加"}
                 </button>
               </div>
+
+              {/*
+                生成中の細い罫。
+                見出しだけ先に出すようにした結果、下が空のまま止まって見える
+                瞬間ができた。動いている線を 1 本引いておけば、
+                「まだ届いていない」のか「これで全部」なのかが取り違えられない。
+              */}
+              {isStreaming && (
+                <div className="h-0.5 bg-[#F1F3F5] overflow-hidden mb-10 -mt-4">
+                  <div className="stream-bar" />
+                </div>
+              )}
 
               {/* タグ / デッキ（F7）。保存済みの単語にのみ出す。 */}
               {(result as SavedWord).id && (
@@ -1438,8 +1499,18 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                   <p className="text-base text-[#656E77] leading-loose mb-8">
                     {result.etymology}
                   </p>
-                  {result.etymologyNodes && (
-                    <EtymologyGraph mainWord={result.word} nodes={result.etymologyNodes} />
+                  {result.etymologyNodes && result.etymologyNodes.length > 0 && (
+                    <DeferredMount minHeight={420}>
+                      <Suspense
+                        fallback={
+                          <div className="h-[420px] flex items-center justify-center">
+                            <Loader2 className="w-4 h-4 animate-spin text-[#C9CDD2]" />
+                          </div>
+                        }
+                      >
+                        <EtymologyGraph mainWord={result.word} nodes={result.etymologyNodes} />
+                      </Suspense>
+                    </DeferredMount>
                   )}
                 </section>
 
@@ -1461,6 +1532,10 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                     </dl>
                   </section>
                 )}
+
+                <section className="section">
+                  <ShareWord word={result.word} contexts={result.specializedContexts} meaning={result.meaning} />
+                </section>
 
                 <section className="section">
                   <h3 className="section-label">例文</h3>

@@ -121,6 +121,24 @@
   }
 }
 
+/*
+ * 生成中を示す細い罫。左から右へ流れる。
+ * Tailwind の animate-[...] は任意値のキーフレーム名を拾ってくれず、
+ * ビルド後の CSS に出力されなかった（見た目は動かない罫になる）。
+ * 素のクラスとして書く。
+ */
+@keyframes stream {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.stream-bar {
+  height: 100%;
+  width: 33%;
+  background-color: #2A5CFF;
+  animation: stream 1.1s ease-in-out infinite;
+}
+
 /* ===========================================================
    単語帳（紙面の再現）
 

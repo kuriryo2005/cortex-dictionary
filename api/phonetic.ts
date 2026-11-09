@@ -10,6 +10,7 @@
  */
 
 import { withAuth, jsonResponse, errorResponse } from "./_lib/handler.js";
+import { groqJson, isGroqConfigured } from "./_lib/groq.js";
 import { withKeyFailover, withModelFallback, MODEL, FAST_THINKING } from "./_lib/gemini.js";
 import { Type } from "@google/genai";
 
@@ -31,23 +32,33 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(400, `単語が長すぎます（${MAX_WORD_LENGTH}文字まで）。`);
     }
 
-    const response = await withModelFallback((model) =>
-      withKeyFailover((ai) =>
-        ai.models.generateContent({
-          model,
-          contents:
-            `Give the IPA pronunciation of the English word "${word}".\n` +
-            `Return the IPA WITHOUT surrounding slashes (e.g. ˈtɜːbjələns for "turbulence").`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: SCHEMA,
-            thinkingConfig: FAST_THINKING,
-          },
-        })
-      )
-    );
+    const prompt =
+      `Give the IPA pronunciation of the English word "${word}".\n` +
+      `Return the IPA WITHOUT surrounding slashes (e.g. ˈtɜːbjələns for "turbulence").`;
 
-    const text = response.text ?? "";
+    let text: string;
+    try {
+      const response = await withModelFallback((model) =>
+        withKeyFailover((ai) =>
+          ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: SCHEMA,
+              thinkingConfig: FAST_THINKING,
+            },
+          }), model
+        )
+      );
+      text = response.text ?? "";
+    } catch (geminiError) {
+      // 発音記号はモデルによる質の差が出ない小さな仕事なので、
+      // Gemini が詰まっているときは Groq に回す（語源系には回さない）。
+      if (!isGroqConfigured()) throw geminiError;
+      console.warn("[api:phonetic] gemini が全滅したので groq に回します");
+      text = JSON.stringify(await groqJson<Record<string, unknown>>(prompt, SCHEMA));
+    }
     let phonetic = "";
     try {
       phonetic = String((JSON.parse(text) as { phonetic?: unknown }).phonetic ?? "");

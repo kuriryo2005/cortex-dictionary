@@ -61,11 +61,13 @@ if (!handled && a.charges_enabled) {
     開発者 > APIキー から sk_live_ で始まる秘密鍵をコピーして、
     以下を実行してください。
 
-      cd C:\Users\kurir\Downloads\LexiLog
+      cd C:/Users/kurir/Downloads/LexiLog
       node scripts/go-live-stripe.mjs sk_live_（本番の秘密鍵）
 `);
   process.exitCode = 0;
 }
 
-console.log("\n  まだ審査中です。不足項目はありません。数日〜1週間かかります。");
-process.exitCode = 1;
+if (!handled) {
+  console.log("\n  まだ審査中です。不足項目はありません。数日〜1週間かかります。");
+  process.exitCode = 1;
+}

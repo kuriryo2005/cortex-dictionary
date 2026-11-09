@@ -2,3 +2,4 @@ User-agent: *
 Allow: /
 
 Sitemap: https://lexi-log-puce.vercel.app/sitemap.xml
+Sitemap: https://lexi-log-puce.vercel.app/sitemap-words.xml

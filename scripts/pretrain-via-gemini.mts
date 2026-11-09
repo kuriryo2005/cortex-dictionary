@@ -16,15 +16,17 @@ import dotenv from "dotenv";
 import type { ThinkingConfig } from "@google/genai";
 dotenv.config({ path: ".env.local" });
 
-import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   withKeyFailover,
   WORD_SCHEMA,
   buildLookupPrompt,
   modeLabel,
+  sanitizeEtymology,
   type ModeSlug,
 } from "../api/_lib/gemini.js";
+import { groqLookup, isGroqConfigured, groqKeyCount } from "../api/_lib/groq.js";
+import { getServiceAccessToken } from "../api/_lib/googleAuth.js";
 
 /**
  * このスクリプトは api/_lib/gemini.ts の MODEL/FAST_THINKING を使わず、
@@ -41,6 +43,19 @@ import {
  * 中身の形は変わらない。
  */
 const PRETRAIN_MODEL = arg("model", "gemini-3.8-flash");
+
+/**
+ * どちらの提供元で作るか。
+ *
+ *   --provider=groq    … Groq（openai/gpt-oss-120b）。無料枠で、語源も深い。
+ *   --provider=gemini  … 従来どおり Gemini。有料。
+ *
+ * 2026-09-22: 同じ強さのプロンプトで比べたところ、語源・使い分けとも Groq が
+ * 勝ち、速度も 3〜5 倍だった（api/lookup.ts の tryGroq のコメント参照）。
+ * 事前学習は「原価ゼロで質が同等以上」の Groq を既定にする。
+ */
+const PROVIDER = arg("provider", "groq");
+const GROQ_MODEL = arg("groq-model", "openai/gpt-oss-120b");
 
 /**
  * 一括処理は本番と同じキーを使わない。
@@ -86,7 +101,7 @@ function selectKeys(): void {
   console.log(`バッチ専用キー ${dedicated.length} 本で実行します。`);
 }
 
-selectKeys();
+if (PROVIDER === "gemini") selectKeys();
 // SDK の型は ThinkingLevel の列挙を要求するが、API には文字列で通る。
 const PRETRAIN_THINKING = { thinkingLevel: "LOW" } as unknown as ThinkingConfig;
 
@@ -153,10 +168,15 @@ let cachedToken = "";
 let tokenFetchedAt = 0;
 const TOKEN_TTL_MS = 45 * 60 * 1000;
 
-function getToken(): string {
+/**
+ * 以前は `gcloud auth print-access-token` を叩いていたが、gcloud が入っていない
+ * 環境では動かず、実行するたびに人の手が要った。本番の API と同じ
+ * FIREBASE_SERVICE_ACCOUNT から取るようにして、放っておいても走るようにする。
+ */
+async function getToken(): Promise<string> {
   const now = Date.now();
   if (!cachedToken || now - tokenFetchedAt > TOKEN_TTL_MS) {
-    cachedToken = execSync("gcloud auth print-access-token").toString().trim();
+    cachedToken = await getServiceAccessToken();
     tokenFetchedAt = now;
   }
   return cachedToken;
@@ -168,31 +188,67 @@ function sleep(ms: number): Promise<void> {
 
 type Task = { word: string; mode: ModeSlug };
 
+/**
+ * 出来上がりが使い物になるかを確かめる。
+ *
+ * 事前学習で入れたものは **キャッシュが書き換え禁止**（dictionary_cache は
+ * allow update: if false）なので、質の悪いものを入れると直せない。
+ * 書く前にここで弾く。弾かれた語は次回の実行でまた試される。
+ */
+function isGoodEnough(entry: Record<string, any>, word: string): string | null {
+  const str = (k: string) => (typeof entry[k] === "string" ? entry[k].trim() : "");
+  if (!str("word")) return "word が空";
+  if (str("word").toLowerCase() !== word.toLowerCase()) return `別の語になった (${str("word")})`;
+  if (str("meaning").length < 2) return "meaning が空";
+  if (str("etymology").length < 15) return "etymology が短すぎる";
+  if (str("nuance").length < 10) return "nuance が短すぎる";
+
+  const ex = Array.isArray(entry.examples) ? entry.examples : [];
+  if (ex.length < 2) return "examples が 2 つ未満";
+  for (const e of ex) {
+    if (!e?.en?.trim() || !e?.ja?.trim()) return "examples に空の en/ja がある";
+  }
+  if (!Array.isArray(entry.senses) || entry.senses.length === 0) return "senses が空";
+  return null;
+}
+
+async function generate(word: string, mode: ModeSlug): Promise<Record<string, unknown>> {
+  if (PROVIDER === "groq") {
+    const res = await groqLookup(GROQ_MODEL, word, mode);
+    return res.detail;
+  }
+  const res = await withKeyFailover((ai) => ai.models.generateContent({
+    model: PRETRAIN_MODEL,
+    contents: buildLookupPrompt(word, mode),
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: WORD_SCHEMA,
+      thinkingConfig: PRETRAIN_THINKING,
+    },
+  }));
+  if (!res.text) throw new Error("empty response");
+  return JSON.parse(res.text) as Record<string, unknown>;
+}
+
 async function processTask(task: Task): Promise<"success" | "skip" | "fail"> {
   const { word, mode } = task;
   const cacheKey = `${word}__${mode}`;
   const url = `${BASE_URL}/dictionary_cache/${encodeURIComponent(cacheKey)}`;
 
-  const checkRes = await fetch(url, { headers: { Authorization: `Bearer ${getToken()}` } });
+  const checkRes = await fetch(url, { headers: { Authorization: `Bearer ${await getToken()}` } });
   if (checkRes.status === 200) return "skip";
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // withKeyFailover は死んだキーを隔離し、混雑（503）だけ待って再試行する。
-      // 以前は getClient() を直接呼んでいたため、クレジットの切れたキーが
-      // ローテーションに残り続け、2,058語中2,023語が失敗した。
-      const res = await withKeyFailover((ai) => ai.models.generateContent({
-        model: PRETRAIN_MODEL,
-        contents: buildLookupPrompt(word, mode),
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: WORD_SCHEMA,
-          thinkingConfig: PRETRAIN_THINKING,
-        },
-      }));
-      const text = res.text;
-      if (!text) throw new Error("empty response");
-      const entry = JSON.parse(text) as Record<string, unknown>;
+      const entry = await generate(word, mode);
+
+      // 本番の検索と同じ後始末を通す（「ラテン語 precarious」のような段を落とす）
+      if (typeof entry.etymology === "string") {
+        entry.etymology = sanitizeEtymology(word, entry.etymology);
+      }
+
+      const bad = isGoodEnough(entry as Record<string, any>, word);
+      if (bad) throw new Error(`品質不足: ${bad}`);
 
       const data = { ...entry, mode: modeLabel(mode) };
       const fields: Record<string, any> = {};
@@ -200,17 +256,18 @@ async function processTask(task: Task): Promise<"success" | "skip" | "fail"> {
 
       const putRes = await fetch(url, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${getToken()}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${await getToken()}`, "Content-Type": "application/json" },
         body: JSON.stringify({ fields }),
       });
       if (!putRes.ok) throw new Error(`firestore write failed: ${await putRes.text()}`);
       return "success";
     } catch (e) {
       if (attempt === MAX_RETRIES) {
-        console.error(`\n${cacheKey} failed after ${MAX_RETRIES} attempts:`, e instanceof Error ? e.message : e);
+        console.error(`
+${cacheKey} failed after ${MAX_RETRIES} attempts:`, e instanceof Error ? e.message : e);
         return "fail";
       }
-      // 別のキー（ラウンドロビン）に切り替わるまで少し待ってからリトライ
+      // 別のキーに切り替わるまで少し待ってからリトライ
       await sleep(1500 * attempt);
     }
   }
@@ -223,12 +280,19 @@ async function main() {
   for (const word of words) {
     for (const mode of MODES) tasks.push({ word, mode });
   }
-  // 1回あたり約1.8円（api/_lib/costLog.ts と同じ前提）。実行前に総額の目安を出す。
-  const estimatedJpy = Math.round(tasks.length * 1.8);
   console.log(`リスト: ${WORDLIST_PATH}`);
   console.log(`単語数: ${words.length} / モード: ${MODES.join(",")}（${tasks.length} 件のタスク）`);
-  console.log(`概算原価: 約 ${estimatedJpy.toLocaleString()} 円（既にキャッシュ済みの分はスキップされるので実際はこれより少ない）
-`);
+  if (PROVIDER === "groq") {
+    if (!isGroqConfigured()) {
+      console.error("GROQ_API_KEY がありません。--provider=gemini を使うか、キーを設定してください。");
+      process.exit(1);
+    }
+    console.log(`提供元: Groq ${GROQ_MODEL}（鍵 ${groqKeyCount()} 本）/ 原価 0 円`);
+  } else {
+    // 1回あたり約1.8円（api/_lib/costLog.ts と同じ前提）
+    console.log(`提供元: Gemini ${PRETRAIN_MODEL} / 概算原価 約 ${Math.round(tasks.length * 1.8).toLocaleString()} 円`);
+  }
+  console.log("");
 
   let success = 0, skip = 0, fail = 0, done = 0;
   let idx = 0;

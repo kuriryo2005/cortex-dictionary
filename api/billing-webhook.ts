@@ -13,6 +13,14 @@
 import { jsonResponse, errorResponse } from "./_lib/handler.js";
 import { getSubscription, verifyWebhook, type StripeSubscription } from "./_lib/stripe.js";
 import { writeSubscription } from "./_lib/subscriptionStore.js";
+import { igVerify, igWebhook } from "./_lib/igReply.js";
+
+/** ?src=ig は Instagram のコメント自動返信（/api/ig-webhook の rewrite 先。関数 12 個の枠のため同居）。api/_lib/igReply.ts */
+const isIg = (request: Request) => new URL(request.url).searchParams.get("src") === "ig";
+
+export async function GET(request: Request): Promise<Response> {
+  return isIg(request) ? igVerify(request) : errorResponse(405, "POST を使ってください。");
+}
 
 /**
  * uid は subscription.metadata が第一。Checkout 経由の初回だけは
@@ -48,6 +56,7 @@ async function applySubscription(sub: StripeSubscription, fallbackUid?: string):
 }
 
 export async function POST(request: Request): Promise<Response> {
+  if (isIg(request)) return igWebhook(request);
   const signature = request.headers.get("stripe-signature");
   if (!signature) return errorResponse(400, "署名がありません。");
 

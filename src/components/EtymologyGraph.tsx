@@ -22,19 +22,46 @@ export const EtymologyGraph: React.FC<Props> = ({ mainWord, nodes }) => {
 
   // Initialize graph data
   useEffect(() => {
-    const initialNodes = [
+    // 同じ語が二重に並ばないようにする。
+    //
+    // AI は etymologyNodes に検索語そのものを混ぜてくることがある（大文字小文字
+    // 違いも含む）。そのまま渡すと id が重複し、d3.forceLink は **後勝ち**で
+    // id を引くので、リンクが白いほうのノードに付き、主役の青いノードだけが
+    // どことも繋がらずに浮く。実際に lexi でその状態が出た。
+    const seen = new Set<string>();
+    const key = (w: string) => w.trim().toLowerCase();
+
+    const initialNodes: any[] = [
       { id: mainWord, group: 1, label: mainWord, isMain: true, meaning: "Current Word" },
-      ...nodes.map((n) => ({ 
-        id: n.word, 
-        group: 2, 
-        label: n.word, 
-        meaning: n.meaning, 
-        root: n.root,
-        relation: n.relation, 
-        isMain: false 
-      }))
     ];
-    const initialLinks = nodes.map((n) => ({ source: mainWord, target: n.word }));
+    seen.add(key(mainWord));
+
+    for (const n of nodes) {
+      if (!n.word) continue;
+      const k = key(n.word);
+      if (seen.has(k)) {
+        // 検索語と同じ語なら、主役ノードに語根の情報だけ移して捨てる。
+        if (k === key(mainWord) && n.root && !initialNodes[0].root) {
+          initialNodes[0].root = n.root;
+        }
+        continue;
+      }
+      seen.add(k);
+      initialNodes.push({
+        id: n.word,
+        group: 2,
+        label: n.word,
+        meaning: n.meaning,
+        root: n.root,
+        relation: n.relation,
+        isMain: false,
+      });
+    }
+
+    const initialLinks = initialNodes
+      .filter((n) => !n.isMain)
+      .map((n) => ({ source: mainWord, target: n.id }));
+
     setGraphData({ nodes: initialNodes, links: initialLinks });
   }, [mainWord, nodes]);
 
@@ -47,9 +74,15 @@ export const EtymologyGraph: React.FC<Props> = ({ mainWord, nodes }) => {
       const newWords = await expandEtymologyRoot(root);
 
       setGraphData(prev => {
-        const existingNodeIds = new Set(prev.nodes.map(n => n.id));
+        const existingNodeIds = new Set(prev.nodes.map(n => String(n.id).trim().toLowerCase()));
         const addedNodes = newWords
-          .filter((nw: any) => !existingNodeIds.has(nw.word))
+          .filter((nw: any) => {
+            const k = String(nw.word ?? "").trim().toLowerCase();
+            if (!k || existingNodeIds.has(k)) return false;
+            // 同じ呼び出しの中にも同語が複数返ることがある
+            existingNodeIds.add(k);
+            return true;
+          })
           .map((nw: any) => ({
             id: nw.word,
             group: 3,
@@ -95,23 +128,55 @@ export const EtymologyGraph: React.FC<Props> = ({ mainWord, nodes }) => {
 
       const g = svg.append("g");
 
+      /**
+       * 描画の直前に、もう一度だけ重複を落とす。
+       *
+       * データ側（初期化と展開）でも弾いているのに、展開を挟むと同じ語が
+       * 二重に入り込むことが実際にあった。d3.forceLink は同じ id のうち
+       * **後のノード**に線を結ぶので、そうなると主役の青いノードだけが
+       * どこともつながらずに浮いて見える（obliviate で再発）。
+       *
+       * 原因を一つずつ潰すより、描く直前に必ず一意にしてしまうほうが確実。
+       * リンクも id 文字列ではなく**ノードの実体**に解決してから渡すので、
+       * d3 側の引き当てに委ねる余地がなくなる。
+       */
+      const nodeById = new Map<string, any>();
+      for (const n of graphData.nodes) {
+        const k = String(n.id).trim().toLowerCase();
+        // 同じ語が二つあるときは主役（青）を優先して残す
+        if (!nodeById.has(k) || n.isMain) nodeById.set(k, n);
+      }
+      const drawNodes = Array.from(nodeById.values());
+
+      const resolve = (v: any) =>
+        nodeById.get(String(v && v.id !== undefined ? v.id : v).trim().toLowerCase());
+      const drawLinks = graphData.links
+        .map((l: any) => ({ source: resolve(l.source), target: resolve(l.target) }))
+        // 行き先を失ったリンクと自分自身へのリンクは描かない
+        .filter((l: any) => l.source && l.target && l.source !== l.target);
+
       const zoom = d3.zoom()
         .scaleExtent([0.3, 4])
         .on("zoom", (event) => g.attr("transform", event.transform));
       svg.call(zoom as any);
 
-      simulation = d3.forceSimulation(graphData.nodes)
-        .force("link", d3.forceLink(graphData.links).id((d: any) => d.id).distance(window.innerWidth < 768 ? 80 : 100))
+      simulation = d3.forceSimulation(drawNodes)
+        .force("link", d3.forceLink(drawLinks).id((d: any) => d.id).distance(window.innerWidth < 768 ? 80 : 100))
         .force("charge", d3.forceManyBody().strength(window.innerWidth < 768 ? -200 : -300))
         .force("center", d3.forceCenter(width / 2, height / 2))
-        .force("collision", d3.forceCollide().radius(window.innerWidth < 768 ? 35 : 45));
+        .force("collision", d3.forceCollide().radius(window.innerWidth < 768 ? 35 : 45))
+        // 既定のままだと落ち着くまで 300 ティック（約 1 秒）回り続け、その間
+        // メインスレッドを握る。実測で、グラフを出した直後の操作が 1 秒遅れていた。
+        // ここに並ぶのはせいぜい十数個のノードなので、そこまで時間をかける必要がない。
+        .alphaDecay(0.06)
+        .velocityDecay(0.5);
 
       simulationRef.current = simulation;
 
       // Links
       const linkPath = g.append("g")
         .selectAll(".link-path")
-        .data(graphData.links)
+        .data(drawLinks)
         .join("g")
         .attr("class", "link-path");
 
@@ -125,11 +190,8 @@ export const EtymologyGraph: React.FC<Props> = ({ mainWord, nodes }) => {
         .attr("class", "link-label")
         .attr("cursor", "pointer")
         .on("click", (event, d: any) => {
-          const targetId = d.target.id || d.target;
-          const nodeData = graphData.nodes.find(n => n.id === targetId);
-          if (nodeData?.root) {
-            handleExpandRoot(nodeData.root, d.source.id || d.source);
-          }
+          // drawLinks の source / target は必ずノードの実体
+          if (d.target?.root) handleExpandRoot(d.target.root, d.source.id);
         });
 
       linkLabel.append("rect")
@@ -149,15 +211,12 @@ export const EtymologyGraph: React.FC<Props> = ({ mainWord, nodes }) => {
         .attr("font-size", "8px")
         .attr("font-weight", "900")
         .attr("fill", "#2A5CFF")
-        .text((d: any) => {
-          const targetId = d.target.id || d.target;
-          return graphData.nodes.find(n => n.id === targetId)?.root || "";
-        });
+        .text((d: any) => d.target?.root || "");
 
       // Nodes
       const nodeGroup = g.append("g")
         .selectAll(".node")
-        .data(graphData.nodes)
+        .data(drawNodes)
         .join("g")
         .attr("class", "node")
         .attr("cursor", "grab")

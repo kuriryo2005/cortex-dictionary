@@ -24,6 +24,7 @@
  */
 
 import { jsonResponse } from "./_lib/handler.js";
+import { groqKeyCount, isGroqConfigured } from "./_lib/groq.js";
 import { getServiceAccessToken } from "./_lib/googleAuth.js";
 import {
   MODEL,
@@ -190,6 +191,16 @@ export async function GET(): Promise<Response> {
     ...(saveWordsError ? { saveWordsError } : {}),
     keys: { healthy: cached.healthy, total: cached.total },
     models: cached.models,
+    /**
+     * Groq（生成の主力）の設定状況。
+     *
+     * 本番で「groq のログが 1 行も出ない」ときに、原因が
+     * 「環境変数が届いていない」のか「コードが古い」のかを切り分けられない。
+     * 鍵の**本数だけ**を出す（値は絶対に出さない）。
+     * ここが 0 なら環境変数が未設定か未反映。
+     * この項目自体が応答に無いなら、デプロイされているコードが古い。
+     */
+    groq: { configured: isGroqConfigured(), keys: groqKeyCount() },
     // traffic … 実際の検索の結果（枠を消費しない）
     // probe   … まだ検索が無いので1トークン生成して確かめた
     source,

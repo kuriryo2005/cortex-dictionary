@@ -14,6 +14,11 @@ import { motion } from "motion/react";
 import { LogIn, Check } from "lucide-react";
 import { MapPreview } from "./MapPreview";
 import { ServiceNotice } from "./ServiceNotice";
+import { GuestPeek } from "./GuestPeek";
+import featuredWords from "../../api/_lib/featuredWords.json";
+
+/** サイトマップに載せている語（E8）の先頭。トップから単語ページへ内部リンクを渡す */
+const FEATURED_LINKS = (featuredWords as { w: string }[]).slice(0, 24).map((x) => x.w);
 
 interface Props {
   onLogin: () => void;
@@ -109,6 +114,19 @@ const ROOT_LINKS: { slug: string; label: string }[] = [
   { slug: "mit", label: "mit（送る）" },
 ];
 
+/**
+ * 掲載実績（実験 F・社会的証明）。事実だけを載せる。
+ * PRESSNOW の無料掲載は「公式サイト内での紹介」が条件なので、掲載されたらここに足す。
+ */
+const MEDIA: { name: string; title: string; url: string; date: string }[] = [
+  {
+    name: "ぷれりり・プレスリリース",
+    title: "論文の英単語を「その分野の意味」で引ける辞書を公開",
+    url: "https://www.prerele.com/releases/detail/54408",
+    date: "2026年10月31日",
+  },
+];
+
 const Rule: React.FC = () => <div className="border-t border-[#EDEFF1]" />;
 
 export const LandingPage: React.FC<Props> = ({ onLogin }) => {
@@ -142,15 +160,20 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
         {/* Hero */}
         <motion.header initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <p className="text-xs font-bold tracking-widest text-[#2A5CFF]">CORTEX DICTIONARY</p>
+          {/*
+            実験 E3（2026-09-30）: 旧見出しは「英単語を、バラバラに覚えるのをやめる。」。
+            集客の投稿は「論文の単語が辞書の意味では読めない」痛みで人を呼んでいるのに、
+            見出しは暗記の話をしていて、一番の売り（分野ごとの意味）が2画面下に埋もれていた。
+          */}
           <h1 className="mt-4 text-4xl md:text-5xl font-black tracking-tight leading-[1.15]">
-            英単語を、
+            論文の英単語を、
             <br />
-            バラバラに覚えるのをやめる。
+            その分野の意味で引く。
           </h1>
           <p className="mt-6 text-[15px] leading-relaxed text-[#656E77]">
-            意味・語源・ニュアンス・専門分野ごとの用法を AI が一度に解説し、覚えた単語を語源で
-            つながったマップとして描き出す英単語アプリ。単語を1つ覚えるたびに、その周りの
-            知らない単語まで見えるようになります。
+            stress は「ストレス」ではなく「応力」、significant は「重要な」ではなく「有意な」。
+            普通の辞書では後ろのほうに埋もれている、分野ごとの意味を AI が先に示します。
+            語源・例文・類義語までまとめて出て、覚えた単語は語源のつながりで広がっていきます。
           </p>
           {pendingWord && (
             <p className="mt-6 border-l-2 border-[#2A5CFF] pl-4 text-sm text-[#1A1C1E]">
@@ -162,6 +185,18 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
             <LoginButton />
             <span className="text-xs text-[#8A9199]">無料で30語まで保存できます / 登録は Google アカウントだけ</span>
           </div>
+          <p className="mt-4 text-xs text-[#8A9199]">
+            13,000 語以上を収録
+            {MEDIA.length > 0 && (
+              <>
+                {" ・ "}
+                <a href="#media" className="underline">
+                  {MEDIA.map((m) => m.name).join("・")} に掲載
+                </a>
+              </>
+            )}
+          </p>
+          <GuestPeek onLogin={onLogin} />
         </motion.header>
 
         {/* 語彙マップの見本。このアプリで一番伝わるものを、登録前に見せる */}
@@ -218,6 +253,7 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
                 <span className="text-sm font-bold text-[#8A9199]"> / 月</span>
               </p>
               <p className="mt-1 text-xs text-[#8A9199]">年額 ¥4,800（月払いなら ¥600）</p>
+              <p className="mt-1 text-xs font-bold text-[#2A5CFF]">最初の 7 日間は無料。いつでも解約できます。</p>
               <ul className="mt-5 space-y-2">
                 {PRO_POINTS.map((p) => (
                   <li key={p} className="flex items-start gap-2 text-sm">
@@ -231,6 +267,7 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
           <p className="mt-8 text-xs leading-relaxed text-[#8A9199]">
             決済は Stripe が処理します。カード情報がこのアプリに保存されることはありません。
             まず無料で試してから、足りなくなったときに切り替えられます。
+            Pro は最初の 7 日間は課金されず、その間に解約しても支払いは発生しません。
           </p>
         </section>
 
@@ -286,7 +323,53 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
             >
               語源の索引をすべて見る →
             </a>
+            <a
+              href="/w/"
+              className="ml-6 inline-flex items-center min-h-11 py-2 text-sm font-bold text-[#2A5CFF] hover:text-[#1A3FCC]"
+            >
+              論文で出会う英単語の一覧 →
+            </a>
           </p>
+          <p className="mt-8 text-sm leading-relaxed text-[#656E77]">論文で意味が変わる英単語</p>
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+            {FEATURED_LINKS.map((w) => (
+              <a
+                key={w}
+                href={`/w/${encodeURIComponent(w)}`}
+                className="inline-flex items-center min-h-11 py-2 text-sm font-bold text-[#1A1C1E] underline decoration-[#C4C9CE] underline-offset-4 hover:decoration-[#1A1C1E]"
+              >
+                {w}
+              </a>
+            ))}
+          </div>
+          <p>
+            <a
+              href="/w/#featured"
+              className="inline-flex items-center min-h-11 py-2 text-sm font-bold text-[#2A5CFF] hover:text-[#1A3FCC]"
+            >
+              {featuredWords.length} 語をすべて見る →
+            </a>
+          </p>
+        </section>
+
+        <div className="mt-20">
+          <Rule />
+        </div>
+
+        {/* メディア掲載 */}
+        <section id="media" className="pt-16">
+          <h2 className="text-xs font-bold tracking-widest text-[#8A9199]">メディア掲載</h2>
+          <ul className="mt-6 space-y-4">
+            {MEDIA.map((m) => (
+              <li key={m.url} className="text-sm leading-relaxed">
+                <span className="text-xs text-[#8A9199]">{m.date}　{m.name}</span>
+                <br />
+                <a href={m.url} target="_blank" rel="noopener" className="font-bold underline">
+                  {m.title}
+                </a>
+              </li>
+            ))}
+          </ul>
         </section>
 
         <div className="mt-20">

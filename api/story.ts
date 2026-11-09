@@ -23,7 +23,7 @@ export async function POST(request: Request): Promise<Response> {
           contents: `英語の単語「${word}」（意味: ${meaning}）について、その語源や歴史的な背景を、学習者がワクワクするような「30秒で読めるショートストーリー」として日本語で語ってください。
   背景情報: ${etymology}`,
           config: { thinkingConfig: FAST_THINKING },
-        })
+        }), model
       )
     );
 

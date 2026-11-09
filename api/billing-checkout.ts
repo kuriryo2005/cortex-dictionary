@@ -29,7 +29,9 @@ export async function POST(request: Request): Promise<Response> {
       // 既に顧客がいれば使い回す。いなければメールから新規作成させる。
       ...(customerId ? { customer: customerId } : { customer_email: user.email }),
       client_reference_id: user.uid,
-      subscription_data: { metadata: { uid: user.uid } },
+      // 7 日間の無料トライアル。Stripe の標準機能なので、自前の
+      // プロモコード基盤を作らずに「まず試してもらう」が成立する。
+      subscription_data: { metadata: { uid: user.uid }, trial_period_days: 7 },
       metadata: { uid: user.uid },
       allow_promotion_codes: true,
       success_url: `${origin}/?checkout=success`,

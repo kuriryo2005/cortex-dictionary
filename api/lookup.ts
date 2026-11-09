@@ -14,17 +14,27 @@ import { withAuth, sseEvent, SSE_HEADERS, errorResponse, classifyAiError } from 
 import {
   withKeyFailover,
   withModelFallback,
+  firstTokenDeadline,
   MODEL,
   WORD_SCHEMA,
   FAST_THINKING,
   buildLookupPrompt,
   modeLabel,
   type ModeSlug,
+  sanitizeEtymology,
 } from "./_lib/gemini.js";
 import type { GoogleGenAI } from "@google/genai";
+import {
+  GROQ_LOOKUP_MODELS,
+  groqLookup,
+  isGroqConfigured,
+  isGroqRecoverable,
+} from "./_lib/groq.js";
 import { parsePartialJson } from "./_lib/partialJson.js";
 import { checkAndConsumeLookupQuota } from "./_lib/quota.js";
 import { logLookupCost, type UsageLike } from "./_lib/costLog.js";
+import { peek } from "./_lib/peek.js";
+import { renderWordPage } from "./_lib/wordPage.js";
 
 /**
  * 混雑時は同じモデルで待って粘り、駄目なら別モデルへ降りる（合計 20 秒まで）。
@@ -95,6 +105,16 @@ function isSuspiciousCorrection(input: string, corrected: string): boolean {
   return distance > threshold;
 }
 
+/**
+ * GET は 2 つの公開用途に使う（Hobby の関数 12 個の枠が埋まっているため同居させている）。
+ *   ?page=word|index … 単語ごとの公開ページ（/w/<単語> の rewrite 先）。api/_lib/wordPage.ts
+ *   それ以外         … ログインなしの試し引き（収録済みの語だけ・AI は呼ばない）。api/_lib/peek.ts
+ */
+export async function GET(request: Request): Promise<Response> {
+  if (new URL(request.url).searchParams.has("page")) return renderWordPage(request);
+  return peek(request);
+}
+
 export async function POST(request: Request): Promise<Response> {
   return withAuth(request, "lookup", async (user, body) => {
     const word = String(body.word ?? "").trim().toLowerCase();
@@ -150,21 +170,32 @@ export async function POST(request: Request): Promise<Response> {
          *   （一度出した内容が、作り直しの途中で一瞬減って見えるのを避ける）。
          */
         const readOnce = async (model: string, ai: GoogleGenAI, quiet: boolean) => {
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents: buildLookupPrompt(word, mode),
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: WORD_SCHEMA,
-              thinkingConfig: FAST_THINKING,
-            },
-          });
+          // 返事を始めるまでの期限。始まったら解除して、あとはいくらでも待つ。
+          // 詰まったモデルをここで見切らないと、容量の大きい Lite へ降りる前に
+          // 全体の締め切りを使い切ってしまう。
+          const opening = firstTokenDeadline(model);
+
+          const stream = await opening.race(
+            ai.models.generateContentStream({
+              model,
+              contents: buildLookupPrompt(word, mode),
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: WORD_SCHEMA,
+                thinkingConfig: FAST_THINKING,
+              },
+            })
+          );
 
           let buffer = "";
-          let lastSentAt = 0;
-          let lastSentKeys = 0;
 
-          for await (const chunk of stream) {
+          // 1 個目のチャンクだけ期限付きで待つ
+          const iterator = stream[Symbol.asyncIterator]();
+          let step = await opening.race(iterator.next());
+          opening.disarm();
+
+          for (; !step.done; step = await iterator.next()) {
+            const chunk = step.value;
             if (chunk.usageMetadata) usage = chunk.usageMetadata as UsageLike;
             const text = chunk.text;
             if (!text) continue;
@@ -172,25 +203,12 @@ export async function POST(request: Request): Promise<Response> {
 
             if (quiet) continue;
 
-            const now = Date.now();
-            // 1 通目だけは間引かない。
-            // 最初の 200ms は「何も出ていない時間」そのもので、体感にいちばん響く。
-            // 2 通目以降は従来どおり間引いて、送りすぎで描画を詰まらせない。
-            if (lastSentAt !== 0 && now - lastSentAt < PARTIAL_INTERVAL_MS) continue;
-
-            const partial = parsePartialJson(buffer);
-            if (!partial) continue;
-
-            // 新しいキーが増えていないなら送らない（同じ内容の再送を避ける）
-            const keyCount = Object.keys(partial).length;
-            if (keyCount <= lastSentKeys) continue;
-
-            lastSentKeys = keyCount;
-            lastSentAt = now;
+            // 間引きと「増えていなければ送らない」の判断は emitPartial に一本化した。
+            // ここで別に数えると、見出し（Groq）と本体（Gemini）で二重管理になる。
             // word は partial/final（AI の応答）のものをそのまま使う。ここで
             // 入力の生の word を後から展開すると、綴りミスを AI が直しても
             // 送信直前に元の綴りへ上書きされてしまう。
-            send({ type: "partial", payload: { ...partial, mode: modeLabel(mode) } });
+            emitFromText(buffer);
           }
 
           // 空の応答も、途中で切れて JSON として読めない応答も、ここで
@@ -204,15 +222,113 @@ export async function POST(request: Request): Promise<Response> {
           }
         };
 
+        /**
+         * 途中経過の送信状況。**リクエスト全体で 1 つ**にする。
+         *
+         * 見出し（Groq）と本体（Gemini）を同時に走らせているので、
+         * 別々に数えると「本体の途中経過が先に届いたあと、項目数の少ない
+         * 見出しが上書きして画面の内容が減る」ことが起きる。
+         * 送った項目数を 1 か所で覚えておき、それより少ないものは送らない。
+         */
+        const sent = { keys: 0, at: 0 };
+
+        /** 途中経過を送る。増えていないものは送らない。 */
+        const emitPartial = (payload: Record<string, unknown>, throttle: boolean) => {
+          const now = Date.now();
+          if (throttle && sent.at !== 0 && now - sent.at < PARTIAL_INTERVAL_MS) return;
+          const keyCount = Object.keys(payload).length;
+          if (keyCount <= sent.keys) return;
+          sent.keys = keyCount;
+          sent.at = now;
+          send({ type: "partial", payload: { ...payload, mode: modeLabel(mode) } });
+        };
+
+        /** ストリームの途中の文字列から送る（本体用）。 */
+        const emitFromText = (accumulated: string) => {
+          const partial = parsePartialJson(accumulated);
+          if (partial) emitPartial(partial, true);
+        };
+
+        /**
+         * 本体の生成（Groq が主力）。
+         *
+         * 一度は「語源で Gemini が勝つ」と判断して Gemini を先に置いたが、
+         * **比較の条件が不公平だった。** Gemini には専用に書き込んだ指示を、
+         * Groq には薄い一行指示を与えていた。同じ強さの指示を与えて測り直すと
+         * 結果が逆転した。
+         *
+         *   語源 7 語: Groq は 7/7 で印欧祖語まで到達（Gemini はラテン語止まりが多い）
+         *   使い分け:  Groq は類義語を実名で対比、Gemini は一般論 1 文
+         *   速度:      Groq 0.8〜3.9 秒、Gemini 7〜17 秒
+         *
+         * 加えて Gemini は無料枠が Flash で 1 鍵 20 回/日しかなく、503 も頻発する。
+         * 実際に「Gemini が 1 件も返せない時間帯」が今日あった。
+         */
+        const handlerStartedAt = Date.now();
+        /** 全体の持ち時間。maxDuration(30秒) に刈られる前に自分で畳む。 */
+        const OVERALL_BUDGET_MS = 27_000;
+
+        const tryGroq = async (): Promise<Record<string, unknown> | null> => {
+          if (!isGroqConfigured()) return null;
+
+          for (const model of GROQ_LOOKUP_MODELS) {
+            const left = OVERALL_BUDGET_MS - (Date.now() - handlerStartedAt);
+            if (left < 4_000) {
+              console.warn("[api:lookup] 残り時間が足りないので groq は試しません");
+              return null;
+            }
+
+            try {
+              const r = await groqLookup(model, word, mode, emitFromText, left);
+              console.log(`[api:lookup] groq ${r.model} が ${r.elapsedMs}ms で応答（Gemini の代役）`);
+              return r.detail;
+            } catch (e) {
+              const detail = e instanceof Error ? e.message : String(e);
+              if (!isGroqRecoverable(e)) {
+                console.warn(`[api:lookup] groq ${model} を諦めます: ${detail.slice(0, 160)}`);
+                return null;
+              }
+              console.warn(`[api:lookup] groq ${model} も詰まっています: ${detail.slice(0, 120)}`);
+            }
+          }
+          return null;
+        };
+
+        /**
+         * 生成は **1 回の呼び出しで完結させる**。
+         *
+         * 一時は「見出し（意味・使い分け）だけ先に別の呼び出しで作って
+         * 1 秒で画面に出す」構成にしていた。体感は良かったが、
+         * **1 検索につき Groq を 2 回消費する**ため、1 日に引ける数が半分
+         * （4,000 → 2,000）になる。容量のほうが大事なので 1 回に戻した。
+         *
+         * 見出しを別プロンプトにしていた本当の理由は速さではなく、
+         * 使い分けの指示を厚く書けることだった。その指示は本体プロンプト
+         * （buildLookupPrompt の nuance）に取り込んであるので、
+         * 1 回でも中身は落ちない。
+         */
         try {
           let attempted = false;
-          let final = await withModelFallback((model) =>
-            withKeyFailover((ai) => {
-              const quiet = attempted;
-              attempted = true;
-              return readOnce(model, ai, quiet);
-            })
-          );
+
+          // 主力は Groq。詰まっていれば即座に 429 が返るので、
+          // 失敗しても 0.1 秒程度しか損しない。
+          let final: Record<string, unknown> | null = await tryGroq();
+
+          if (!final) {
+            // Groq が全滅した。容量の大きい Gemini に回す。
+            // Gemini は遅いが 1 日 13,200 回あり、Groq（4,000 回）より太い。
+            console.warn("[api:lookup] groq が全滅したので gemini に回します");
+            final = await withModelFallback(
+              (model) =>
+                withKeyFailover((ai) => {
+                  const quiet = attempted;
+                  attempted = true;
+                  return readOnce(model, ai, quiet);
+                }, model),
+              // Groq に使った分を引いた残りだけ渡す
+              OVERALL_BUDGET_MS - (Date.now() - handlerStartedAt)
+            );
+          }
 
           logLookupCost(word, mode, usage);
 
@@ -233,7 +349,7 @@ export async function POST(request: Request): Promise<Response> {
                     responseSchema: WORD_SCHEMA,
                     thinkingConfig: FAST_THINKING,
                   },
-                })
+                }), MODEL
               );
               const retryText = retryRes.text;
               if (retryText) final = JSON.parse(retryText) as Record<string, unknown>;
@@ -241,6 +357,10 @@ export async function POST(request: Request): Promise<Response> {
               console.error("[api:lookup] strict retry failed", retryError);
               // 引き直しに失敗しても、最初の（疑わしい）結果をそのまま返して検索は継続する
             }
+          }
+
+          if (final && typeof final.etymology === "string") {
+            final.etymology = sanitizeEtymology(word, final.etymology);
           }
 
           send({ type: "done", payload: { ...final, mode: modeLabel(mode) } });

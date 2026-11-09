@@ -8,3 +8,12 @@ coverage/
 !.env.example
 scripts/_wordlist-remaining.txt
 out/
+
+.vercel
+
+.stripe-live-key
+開通ログ.txt
+
+# 作業用の一時ファイル（単語の一括生成など）
+scripts/_*
+/_matrix.mjs
