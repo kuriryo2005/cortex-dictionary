@@ -35,6 +35,7 @@ import { checkAndConsumeLookupQuota } from "./_lib/quota.js";
 import { logLookupCost, type UsageLike } from "./_lib/costLog.js";
 import { peek } from "./_lib/peek.js";
 import { renderWordPage } from "./_lib/wordPage.js";
+import { handleSearchLog } from "./_lib/searchLog.js";
 
 /**
  * 混雑時は同じモデルで待って粘り、駄目なら別モデルへ降りる（合計 20 秒まで）。
@@ -116,6 +117,8 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // 匿名の検索ログ（関数の枠が埋まっているので同居）。認証は不要
+  if (new URL(request.url).searchParams.has("log")) return handleSearchLog(request);
   return withAuth(request, "lookup", async (user, body) => {
     const word = String(body.word ?? "").trim().toLowerCase();
     const mode: ModeSlug = body.mode === "aca" ? "aca" : "gen";

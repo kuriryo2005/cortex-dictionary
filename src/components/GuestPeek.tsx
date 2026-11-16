@@ -8,6 +8,7 @@
 
 import React, { useState } from "react";
 import { ShareWord } from "./ShareWord";
+import { logSearch } from "../lib/searchLog";
 
 const LIMIT = 3;
 const STORAGE_KEY = "cortex_guest_peeks_v1";
@@ -70,6 +71,7 @@ export const GuestPeek: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
         return;
       }
       setResult(body);
+      logSearch(word.trim().toLowerCase(), body.found ? "guest-hit" : "guest-miss", academic ? "aca" : "gen", true);
       // 見つかったときだけ数える。未収録で回数を減らすと試せないまま終わる
       if (body.found) {
         const next = used + 1;

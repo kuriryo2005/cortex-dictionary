@@ -10,6 +10,7 @@ import { WordDetail, SavedWord, DictionaryMode, ExtractedCandidate } from "../ty
 import { db, auth } from "../firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { toModeSlug, toWordLower } from "../lib/normalize";
+import { logSearch } from "../lib/searchLog";
 
 /**
  * localStorage のキャッシュキー。
@@ -63,7 +64,8 @@ export function getCachedWord(word: string, mode: DictionaryMode): WordDetail | 
  * 記録する。local / firestore はコストゼロ、ai だけが実費（約1.8円）。
  * 計測基盤が無効でも track は黙って捨てられるだけで、検索には影響しない。
  */
-function trackLookupSource(source: "local" | "firestore" | "ai", mode: DictionaryMode): void {
+function trackLookupSource(source: "local" | "firestore" | "ai", mode: DictionaryMode, word = ""): void {
+  if (word) logSearch(toWordLower(word), source, toModeSlug(mode) === "aca" ? "aca" : "gen", false);
   try {
     track("lookup", { source, mode: String(mode) });
   } catch {
@@ -132,7 +134,7 @@ export async function lookupWord(
 
   const local = localCache.get(cacheKey);
   if (local) {
-    trackLookupSource("local", mode);
+    trackLookupSource("local", mode, word);
     return local;
   }
 
@@ -143,14 +145,14 @@ export async function lookupWord(
       const data = snap.data() as WordDetail;
       localCache.set(cacheKey, data);
       saveLocalCache(); // 旧実装はここで保存しておらず、毎回 Firestore を往復していた
-      trackLookupSource("firestore", mode);
+      trackLookupSource("firestore", mode, word);
       return data;
     }
   } catch (e) {
     console.warn("Dictionary cache read failed, falling back to AI:", e);
   }
 
-  trackLookupSource("ai", mode);
+  trackLookupSource("ai", mode, word);
   const result = await streamLookup(word, mode, onPartial);
 
   localCache.set(cacheKey, result);
