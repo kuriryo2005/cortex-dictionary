@@ -1534,7 +1534,7 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
                 )}
 
                 <section className="section">
-                  <ShareWord word={result.word} contexts={result.specializedContexts} meaning={result.meaning} />
+                  <ShareWord word={result.word} contexts={result.specializedContexts} meaning={result.meaning} phonetic={result.phonetic} />
                 </section>
 
                 <section className="section">

@@ -158,7 +158,7 @@ export const GuestPeek: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
             <p className="mt-2 text-xs leading-relaxed text-[#8A9199]">語源: {result.etymology}</p>
           )}
           <div className="mt-5">
-            <ShareWord word={result.word} contexts={result.specializedContexts} meaning={result.meaning} />
+            <ShareWord word={result.word} contexts={result.specializedContexts} meaning={result.meaning} phonetic={result.phonetic} />
           </div>
           <p className="mt-5 text-sm">
             例文・類義語・語源のつながりまで見るには{" "}
