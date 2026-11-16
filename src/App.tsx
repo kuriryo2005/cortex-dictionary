@@ -89,6 +89,8 @@ import { ScrollArea } from "./components/ui/scroll-area";
 import { Toaster, toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import { auth, db } from "./firebase";
+import { detectInApp } from "./lib/inAppBrowser";
+import { InAppBanner, InAppLoginHelp } from "./components/InAppNotice";
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -415,7 +417,15 @@ export default function App() {
     );
   };
 
+  // SNS のアプリ内ブラウザでは Google ログインが使えない（src/lib/inAppBrowser.ts）
+  const inApp = useMemo(() => detectInApp(), []);
+  const [inAppHelp, setInAppHelp] = useState(false);
+
   const handleLogin = async () => {
+    if (inApp) {
+      setInAppHelp(true);
+      return;
+    }
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
@@ -784,7 +794,9 @@ const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
   if (!user) {
     return (
       <>
+        {inApp && <InAppBanner info={inApp} onOpenHelp={() => setInAppHelp(true)} />}
         <LandingPage onLogin={handleLogin} />
+        {inApp && inAppHelp && <InAppLoginHelp info={inApp} onClose={() => setInAppHelp(false)} />}
         <Toaster position="bottom-right" richColors />
       </>
     );

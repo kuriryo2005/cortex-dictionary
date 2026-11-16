@@ -4,6 +4,10 @@ import {Analytics} from '@vercel/analytics/react';
 import App from './App.tsx';
 import { CoachMarksHarness } from './components/CoachMarksHarness';
 import './index.css';
+import { redirectLineToExternal } from './lib/inAppBrowser';
+
+// LINE のアプリ内ブラウザなら外部ブラウザで開き直す（Google ログインが使えないため）
+redirectLineToExternal();
 
 /**
  * 開発時だけ、コーチマークの見え方を確かめる画面に切り替える。

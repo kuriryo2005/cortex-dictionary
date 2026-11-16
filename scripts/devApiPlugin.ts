@@ -69,6 +69,8 @@ export function devApiPlugin(env: Record<string, string>): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const pathname = (req.url ?? "").split("?")[0];
         if (!pathname.startsWith("/api/")) return next();
+        // /api/_lib/ 以下はフロントが import する部品（featuredWords.json 等）。API ではないので Vite に任せる
+        if (pathname.startsWith("/api/_lib/")) return next();
 
         const name = pathname.slice("/api/".length).replace(/[^a-zA-Z0-9-]/g, "");
         if (!name) return next();
