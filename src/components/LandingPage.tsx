@@ -13,7 +13,6 @@ import React from "react";
 import { motion } from "motion/react";
 import { LogIn, Check } from "lucide-react";
 import { MapPreview } from "./MapPreview";
-import { ServiceNotice } from "./ServiceNotice";
 import { GuestPeek } from "./GuestPeek";
 import featuredWords from "../../api/_lib/featuredWords.json";
 
@@ -155,7 +154,6 @@ export const LandingPage: React.FC<Props> = ({ onLogin }) => {
     <div className="min-h-screen bg-white text-[#1A1C1E] overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl px-6 py-16 md:py-24">
         {/* 生成が止まっているときだけ出る。登録してから気づくのでは遅い */}
-        <ServiceNotice />
 
         {/* Hero */}
         <motion.header initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>

@@ -5,7 +5,7 @@
  * 判断できなかった。Vercel の環境変数はローカルの .env.local とは別物
  * なので、外から見える形で持っておく。
  *
- * 各キーの生死は、実際に1トークンだけ生成させて確かめる。
+ * 各キーの生死は、本番の検索が残した記録から読む（2026-11-21 から自分では生成しない。下の説明）。
  *
  * 以前はモデル一覧の取得（/v1beta/models）で判定していたが、**これは枠を
  * 使い切ったキーでも成功する**。その結果 healthy 5/5 と報告しながら実際の
@@ -27,8 +27,6 @@ import { jsonResponse } from "./_lib/handler.js";
 import { groqKeyCount, isGroqConfigured } from "./_lib/groq.js";
 import { getServiceAccessToken } from "./_lib/googleAuth.js";
 import {
-  MODEL,
-  FALLBACK_MODELS,
   observedWorkingModels,
   hasObservations,
   healthyKeyCount,
@@ -37,28 +35,16 @@ import {
 export const config = { runtime: "nodejs" };
 
 /**
- * 実際に生成して確かめるのは、まだ一度も本番の検索が走っていないときだけ。
- * しかも1時間に1回まで。
- *
- * 10分おきに全キー×全モデルを叩いていたときは、それだけで1日144回。
- * 無料枠は通常 Flash が1日20回なので、**監視が本番の枠を食い潰していた。**
- * 普段は本番の検索が残した記録（gemini.ts の台帳）を読むだけにする。
+ * 2026-11-21: probe（自分で生成して確かめる）を廃止した。
+ * トップページを開くたびにこの API が呼ばれ、記録の無いインスタンス（Vercel は
+ * アクセスが増えると新しく立てる）では毎回 12 キー×モデル連鎖で実生成していた。
+ * 海外の bot（headless Chrome 等）がトップを開くだけで無料枠が尽き、
+ * 11/19〜21 は昼までに keys 0/12・生成不可になっていた。監視の curl も同じだった。
+ * いまは本番の検索が残した記録（gemini.ts の台帳）を読むだけ。記録が無いときは
+ * 「不明」（canGenerate: null）を返し、生成は一切しない。
  */
-const CACHE_MS = 60 * 60 * 1000;
-/** 本番の検索とまったく同じ順で試す。 */
-const CHAIN = [MODEL, ...FALLBACK_MODELS];
 /** GEMINI_API_KEY_2 .. _30 まで探す（api/_lib/gemini.ts と揃える）。 */
 const MAX_KEY_INDEX = 30;
-
-interface Probe {
-  at: number;
-  healthy: number;
-  total: number;
-  /** いま実際に生成できるモデル名（キーをまたいで1つでも通ったもの）。 */
-  models: string[];
-}
-let cached: Probe | null = null;
-let cachedTtl = CACHE_MS;
 
 function loadKeys(): string[] {
   const keys: string[] = [];
@@ -73,47 +59,6 @@ function loadKeys(): string[] {
   return keys;
 }
 
-/**
- * 時間の上限。2026-11-05、デプロイ直後（台帳が空 → probe）に1本の fetch が
- * 返らず、/api/health が 300 秒でタイムアウトした。fetch には既定の締め切りが
- * 無いので、1回ごとと全体の両方に上限を付ける。
- */
-const PROBE_CALL_MS = 4_000;
-const PROBE_TOTAL_MS = 8_000;
-/** 締め切りで打ち切った結果は信用しきれないので、短く持つ。 */
-const PARTIAL_CACHE_MS = 5 * 60 * 1000;
-
-async function canGenerateWith(key: string, model: string, deadline: number): Promise<boolean> {
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) return false;
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": key, "content-type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: "hi" }] }],
-          generationConfig: { maxOutputTokens: 1 },
-        }),
-        signal: AbortSignal.timeout(Math.min(PROBE_CALL_MS, remaining)),
-      }
-    );
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-/** このキーで生成できるモデルを1つ探す。見つからなければ null。 */
-async function firstUsableModel(key: string, deadline: number): Promise<string | null> {
-  for (const model of CHAIN) {
-    if (Date.now() >= deadline) return null;
-    if (await canGenerateWith(key, model, deadline)) return model;
-  }
-  return null;
-}
-
 /** 返らない Promise に応答全体を引きずられないための保険。 */
 function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
@@ -126,36 +71,11 @@ function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 export async function GET(): Promise<Response> {
   const keys = loadKeys();
 
-  // 本番の検索が実際に通っているなら、それ以上確かめる必要はない（消費ゼロ）。
-  const observed = observedWorkingModels();
-  let source: "traffic" | "probe";
-
-  if (hasObservations()) {
-    source = "traffic";
-    cached = {
-      at: Date.now(),
-      // 退避中でないキーの本数。台帳に成功が1件も無ければ、本数に関係なく 0
-      // （キーは生きていてもモデルが全部詰まっている、という状態を見逃さない）。
-      healthy: observed.length > 0 ? healthyKeyCount() : 0,
-      total: keys.length,
-      models: observed,
-    };
-  } else {
-    source = "probe";
-    if (!cached || Date.now() - cached.at > cachedTtl) {
-      const deadline = Date.now() + PROBE_TOTAL_MS;
-      const results = await Promise.all(keys.map((k) => firstUsableModel(k, deadline)));
-      const usable = results.filter((m): m is string => m !== null);
-      const partial = Date.now() >= deadline;
-      cached = {
-        at: Date.now(),
-        healthy: usable.length,
-        total: keys.length,
-        models: [...new Set(usable)],
-      };
-      cachedTtl = partial ? PARTIAL_CACHE_MS : CACHE_MS;
-    }
-  }
+  // 本番の検索が残した記録だけを読む（枠を消費しない）。記録が無ければ不明。
+  const known = hasObservations();
+  const observed = known ? observedWorkingModels() : [];
+  const healthy = known ? (observed.length > 0 ? healthyKeyCount() : 0) : null;
+  const source: "traffic" | "unknown" = known ? "traffic" : "unknown";
 
   // 課金の設定。署名シークレットは「空文字が入っている」ことが実際にあったので、
   // 存在ではなく形まで見る（whsec_ で始まる十分な長さ）。
@@ -185,12 +105,13 @@ export async function GET(): Promise<Response> {
   return jsonResponse({
     // 収録済みの単語の検索と復習はキーが無くても動くので、ここが false でも
     // アプリ全体が止まっているわけではない（新しい単語の生成だけが止まる）。
-    canGenerate: cached.healthy > 0,
+    // null … このインスタンスではまだ検索が無く分からない（画面では「問題なし」扱い）
+    canGenerate: healthy === null ? null : healthy > 0,
     canSaveWords,
     // 保存が動かないとき、何が悪いのかをここで言い切る
     ...(saveWordsError ? { saveWordsError } : {}),
-    keys: { healthy: cached.healthy, total: cached.total },
-    models: cached.models,
+    keys: { healthy, total: keys.length },
+    models: observed,
     /**
      * Groq（生成の主力）の設定状況。
      *
@@ -202,9 +123,9 @@ export async function GET(): Promise<Response> {
      */
     groq: { configured: isGroqConfigured(), keys: groqKeyCount() },
     // traffic … 実際の検索の結果（枠を消費しない）
-    // probe   … まだ検索が無いので1トークン生成して確かめた
+    // unknown … このインスタンスではまだ検索が無い（生成して確かめることはしない）
     source,
     billingConfigured,
-    checkedAt: new Date(cached.at).toISOString(),
+    checkedAt: new Date().toISOString(),
   });
 }
